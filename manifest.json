@@ -1,0 +1,11 @@
+{
+	"id": "feishu-share",
+	"name": "飞书分享",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "一键将 Obsidian 笔记分享到飞书云文档，支持完整格式转换和文件夹管理",
+	"author": "Astral719",
+	"authorUrl": "https://github.com/Astral719",
+	"fundingUrl": "https://github.com/Astral719/obsidian-feishu-oauth-proxy",
+	"isDesktopOnly": false
+}
