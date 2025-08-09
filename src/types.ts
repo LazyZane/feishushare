@@ -89,6 +89,7 @@ export interface LocalFileInfo {
 	fileName: string;
 	placeholder: string;
 	isImage: boolean;
+	isSubDocument?: boolean;  // 新增：标识是否为子文档（双链引用的md文件）
 	altText?: string;
 }
 
@@ -98,6 +99,27 @@ export interface LocalFileInfo {
 export interface MarkdownProcessResult {
 	content: string;
 	localFiles: LocalFileInfo[];
+}
+
+/**
+ * 子文档处理结果
+ */
+export interface SubDocumentResult {
+	success: boolean;
+	documentToken?: string;
+	url?: string;
+	title?: string;
+	error?: string;
+}
+
+/**
+ * 处理上下文（用于控制递归深度和防止循环引用）
+ */
+export interface ProcessContext {
+	maxDepth: number;
+	currentDepth: number;
+	processedFiles: Set<string>; // 防止循环引用
+	parentDocumentId?: string;   // 父文档ID，用于建立关联
 }
 
 /**

@@ -12,7 +12,8 @@ import {
 	MarkdownProcessResult,
 	FeishuDocBlocksResponse,
 	FeishuBlockCreateResponse,
-	PlaceholderBlock
+	PlaceholderBlock,
+	SubDocumentResult
 } from './types';
 import { FEISHU_CONFIG, FEISHU_ERROR_MESSAGES } from './constants';
 
@@ -287,10 +288,28 @@ export class FeishuApiService {
 					if (finalResult.success && finalResult.documentToken) {
 						const docUrl = `https://feishu.cn/docx/${finalResult.documentToken}`;
 
-						// 第四步：处理文件上传（如果有本地文件）
+						// 第四步：处理子文档和文件上传（如果有本地文件）
 						if (processResult.localFiles.length > 0) {
 							try {
-								await this.processFileUploads(finalResult.documentToken, processResult.localFiles, statusNotice);
+								// 分离子文档和普通文件
+								const subDocuments = processResult.localFiles.filter(f => f.isSubDocument);
+								const regularFiles = processResult.localFiles.filter(f => !f.isSubDocument);
+
+								// 先处理子文档上传
+								if (subDocuments.length > 0) {
+									if (statusNotice) {
+										statusNotice.setMessage(`📄 正在处理 ${subDocuments.length} 个子文档...`);
+									}
+									await this.processSubDocuments(finalResult.documentToken, subDocuments, statusNotice);
+								}
+
+								// 再处理普通文件上传
+								if (regularFiles.length > 0) {
+									if (statusNotice) {
+										statusNotice.setMessage(`📎 正在处理 ${regularFiles.length} 个附件...`);
+									}
+									await this.processFileUploads(finalResult.documentToken, regularFiles, statusNotice);
+								}
 							} catch (fileError) {
 								console.warn('⚠️ File upload processing failed:', fileError);
 								// 文件上传失败不影响主流程，继续返回文档链接
@@ -1696,5 +1715,221 @@ export class FeishuApiService {
 		});
 
 		return sorted;
+	}
+
+	/**
+	 * 处理子文档上传
+	 */
+	private async processSubDocuments(parentDocumentId: string, subDocuments: LocalFileInfo[], statusNotice?: Notice): Promise<void> {
+		console.log(`🚀 Starting sub-document processing for ${subDocuments.length} documents`);
+
+		for (let i = 0; i < subDocuments.length; i++) {
+			const subDoc = subDocuments[i];
+
+			try {
+				if (statusNotice) {
+					statusNotice.setMessage(`📄 正在处理子文档 ${i + 1}/${subDocuments.length}: ${subDoc.fileName}...`);
+				}
+
+				console.log(`📄 Processing sub-document: ${subDoc.fileName} (${subDoc.originalPath})`);
+
+				// 读取子文档内容
+				const subDocContent = await this.readSubDocumentContent(subDoc.originalPath);
+				if (!subDocContent) {
+					console.warn(`⚠️ Could not read sub-document: ${subDoc.originalPath}, skipping...`);
+					continue;
+				}
+
+				// 上传子文档到飞书
+				const subDocResult = await this.uploadSubDocument(subDoc.fileName, subDocContent);
+				if (!subDocResult.success) {
+					console.warn(`⚠️ Failed to upload sub-document: ${subDoc.fileName}, error: ${subDocResult.error}`);
+					continue;
+				}
+
+				// 在父文档中插入子文档链接
+				await this.insertSubDocumentLink(parentDocumentId, subDoc, subDocResult);
+
+				console.log(`✅ Successfully processed sub-document: ${subDoc.fileName}`);
+
+			} catch (error) {
+				console.error(`❌ Error processing sub-document ${subDoc.fileName}:`, error);
+				// 继续处理下一个子文档
+			}
+		}
+
+		console.log(`✅ Completed sub-document processing`);
+	}
+
+	/**
+	 * 读取子文档内容
+	 */
+	private async readSubDocumentContent(filePath: string): Promise<string | null> {
+		try {
+			// 清理和规范化路径
+			let cleanPath = filePath.trim();
+			const normalizedPath = normalizePath(cleanPath);
+
+			console.log(`🔍 Reading sub-document: "${filePath}" -> "${normalizedPath}"`);
+
+			// 获取文件对象
+			let file = this.app.vault.getFileByPath(normalizedPath);
+
+			if (!file) {
+				// 尝试在所有Markdown文件中查找
+				const allFiles = this.app.vault.getMarkdownFiles();
+				const fileName = normalizedPath.split('/').pop()?.toLowerCase();
+
+				if (fileName) {
+					const foundFile = allFiles.find(f => f.name.toLowerCase() === fileName);
+					if (foundFile) {
+						file = foundFile;
+						console.log(`✅ Found sub-document by name: ${file.path}`);
+					}
+				}
+			}
+
+			if (!file) {
+				console.warn(`❌ Sub-document not found: ${normalizedPath}`);
+				return null;
+			}
+
+			// 读取文本内容
+			const content = await this.app.vault.read(file);
+			console.log(`✅ Successfully read sub-document: ${file.path} (${content.length} characters)`);
+			return content;
+
+		} catch (error) {
+			console.error(`❌ Error reading sub-document ${filePath}:`, error);
+			return null;
+		}
+	}
+
+	/**
+	 * 上传子文档到飞书
+	 */
+	private async uploadSubDocument(title: string, content: string): Promise<SubDocumentResult> {
+		try {
+			console.log(`📤 Uploading sub-document: ${title}`);
+
+			// 使用现有的上传方法
+			const uploadResult = await this.uploadMarkdownFile(title, content);
+			if (!uploadResult.success) {
+				return {
+					success: false,
+					error: uploadResult.error || '子文档上传失败'
+				};
+			}
+
+			// 创建导入任务
+			const cleanTitle = title.endsWith('.md') ? title.slice(0, -3) : title;
+			const importResult = await this.createImportTaskWithCorrectFolder(uploadResult.fileToken!, cleanTitle);
+
+			if (!importResult.success) {
+				return {
+					success: false,
+					error: importResult.error || '子文档导入任务创建失败'
+				};
+			}
+
+			// 等待导入完成
+			const finalResult = await this.waitForImportCompletionWithTimeout(importResult.ticket!, 15000);
+
+			if (finalResult.success && finalResult.documentToken) {
+				const docUrl = `https://feishu.cn/docx/${finalResult.documentToken}`;
+
+				// 删除源文件
+				try {
+					await this.deleteSourceFile(uploadResult.fileToken!);
+				} catch (deleteError) {
+					console.warn('⚠️ Failed to delete sub-document source file:', deleteError);
+				}
+
+				return {
+					success: true,
+					documentToken: finalResult.documentToken,
+					url: docUrl,
+					title: cleanTitle
+				};
+			} else {
+				return {
+					success: false,
+					error: '子文档导入超时或失败'
+				};
+			}
+
+		} catch (error) {
+			console.error('Upload sub-document error:', error);
+			return {
+				success: false,
+				error: error.message
+			};
+		}
+	}
+
+	/**
+	 * 在父文档中插入子文档链接
+	 */
+	private async insertSubDocumentLink(parentDocumentId: string, subDocInfo: LocalFileInfo, subDocResult: SubDocumentResult): Promise<void> {
+		try {
+			console.log(`🔗 Inserting sub-document link for: ${subDocInfo.fileName}`);
+
+			// 查找占位符位置
+			const placeholderBlocks = await this.findPlaceholderBlocks(parentDocumentId, [subDocInfo]);
+
+			if (placeholderBlocks.length === 0) {
+				console.warn(`⚠️ No placeholder found for sub-document: ${subDocInfo.fileName}`);
+				return;
+			}
+
+			const placeholderBlock = placeholderBlocks[0];
+
+			// 创建链接文本
+			const linkText = `📄 [${subDocResult.title}](${subDocResult.url})`;
+
+			// 替换占位符为链接
+			await this.replaceTextInBlock(parentDocumentId, placeholderBlock.blockId, linkText);
+
+			console.log(`✅ Successfully inserted sub-document link: ${subDocInfo.fileName}`);
+
+		} catch (error) {
+			console.error(`❌ Error inserting sub-document link for ${subDocInfo.fileName}:`, error);
+		}
+	}
+
+	/**
+	 * 替换文档块中的文本
+	 */
+	private async replaceTextInBlock(documentId: string, blockId: string, newText: string): Promise<void> {
+		try {
+			const response = await requestUrl({
+				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${blockId}`,
+				method: 'PATCH',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify({
+					elements: [
+						{
+							text_run: {
+								content: newText
+							}
+						}
+					]
+				})
+			});
+
+			const data = response.json || JSON.parse(response.text);
+			if (data.code !== 0) {
+				throw new Error(data.msg || '替换文本失败');
+			}
+
+			console.log(`✅ Successfully replaced text in block: ${blockId}`);
+
+		} catch (error) {
+			console.error(`❌ Error replacing text in block ${blockId}:`, error);
+			throw error;
+		}
 	}
 }

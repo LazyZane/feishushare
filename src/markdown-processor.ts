@@ -1,4 +1,5 @@
-import { LocalFileInfo, MarkdownProcessResult } from './types';
+import { App, TFile, normalizePath } from 'obsidian';
+import { LocalFileInfo, MarkdownProcessResult, ProcessContext } from './types';
 
 /**
  * Markdown 内容处理器
@@ -6,6 +7,11 @@ import { LocalFileInfo, MarkdownProcessResult } from './types';
  */
 export class MarkdownProcessor {
 	private localFiles: LocalFileInfo[] = [];
+	private app: App;
+
+	constructor(app: App) {
+		this.app = app;
+	}
 	/**
 	 * 处理 Markdown 内容
 	 * @param content 原始 Markdown 内容
@@ -28,7 +34,7 @@ export class MarkdownProcessor {
 	/**
 	 * 处理 Wiki 链接 [[link]]
 	 */
-	private processWikiLinks(content: string): string {
+	private processWikiLinks(content: string, context?: ProcessContext): string {
 		// 匹配 [[link]] 或 [[link|display]]
 		return content.replace(/\[\[([^\]|]+)(\|([^\]]+))?\]\]/g, (match, link, _, display) => {
 			// 检查是否为文件引用（有文件扩展名）
@@ -44,9 +50,41 @@ export class MarkdownProcessor {
 				this.localFiles.push(fileInfo);
 				return placeholder;
 			} else {
-				// 普通的Wiki链接，保持原有逻辑
-				const displayText = display || link;
-				return `📝 ${displayText}`;
+				// 检查是否为双链引用的markdown文件
+				const linkedFile = this.findLinkedMarkdownFile(link);
+				if (linkedFile && context) {
+					// 检查是否已经处理过此文件（防止循环引用）
+					const normalizedPath = normalizePath(linkedFile.path);
+					if (context.processedFiles.has(normalizedPath)) {
+						console.warn(`⚠️ Circular reference detected for file: ${normalizedPath}`);
+						const displayText = display || link;
+						return `📝 ${displayText} (循环引用)`;
+					}
+
+					// 检查递归深度
+					if (context.currentDepth >= context.maxDepth) {
+						console.warn(`⚠️ Max depth reached for file: ${normalizedPath}`);
+						const displayText = display || link;
+						return `📝 ${displayText} (深度限制)`;
+					}
+
+					// 创建子文档占位符
+					const placeholder = this.generatePlaceholder();
+					const fileInfo: LocalFileInfo = {
+						originalPath: linkedFile.path,
+						fileName: linkedFile.basename,
+						placeholder: placeholder,
+						isImage: false,
+						isSubDocument: true,
+						altText: display || link
+					};
+					this.localFiles.push(fileInfo);
+					return placeholder;
+				} else {
+					// 普通的Wiki链接，保持原有逻辑
+					const displayText = display || link;
+					return `📝 ${displayText}`;
+				}
 			}
 		});
 	}
@@ -193,11 +231,18 @@ export class MarkdownProcessor {
 	/**
 	 * 完整处理并返回文件信息（新方法）
 	 */
-	processCompleteWithFiles(content: string): MarkdownProcessResult {
+	processCompleteWithFiles(content: string, maxDepth: number = 3): MarkdownProcessResult {
 		// 重置本地文件列表
 		this.localFiles = [];
 
-		const processedContent = this.processComplete(content);
+		// 创建处理上下文
+		const context: ProcessContext = {
+			maxDepth: maxDepth,
+			currentDepth: 0,
+			processedFiles: new Set<string>()
+		};
+
+		const processedContent = this.processCompleteWithContext(content, context);
 
 		return {
 			content: processedContent,
@@ -253,5 +298,120 @@ export class MarkdownProcessor {
 	 */
 	clearLocalFiles(): void {
 		this.localFiles = [];
+	}
+
+	/**
+	 * 查找双链引用的Markdown文件
+	 */
+	private findLinkedMarkdownFile(linkText: string): TFile | null {
+		try {
+			// 清理链接文本
+			let cleanLink = linkText.trim();
+
+			// 移除可能的路径前缀
+			cleanLink = cleanLink.replace(/^\.\//, '').replace(/^\//, '');
+
+			// 如果没有扩展名，尝试添加.md
+			if (!cleanLink.includes('.')) {
+				cleanLink = cleanLink + '.md';
+			}
+
+			// 规范化路径
+			const normalizedPath = normalizePath(cleanLink);
+
+			// 首先尝试直接路径匹配
+			let file = this.app.vault.getFileByPath(normalizedPath);
+
+			if (!file) {
+				// 如果直接路径不匹配，尝试按文件名查找
+				const fileName = normalizedPath.split('/').pop()?.toLowerCase();
+				if (fileName) {
+					const allFiles = this.app.vault.getMarkdownFiles();
+					file = allFiles.find(f => f.name.toLowerCase() === fileName) || null;
+				}
+			}
+
+			if (!file) {
+				// 最后尝试模糊匹配（不包含扩展名的情况）
+				const baseName = linkText.trim().toLowerCase();
+				const allFiles = this.app.vault.getMarkdownFiles();
+				file = allFiles.find(f => f.basename.toLowerCase() === baseName) || null;
+			}
+
+			if (file) {
+				console.log(`✅ Found linked markdown file: "${linkText}" -> "${file.path}"`);
+			} else {
+				console.log(`❌ Linked markdown file not found: "${linkText}"`);
+			}
+
+			return file;
+		} catch (error) {
+			console.error(`Error finding linked file for "${linkText}":`, error);
+			return null;
+		}
+	}
+
+	/**
+	 * 处理子文档内容（带递归控制）
+	 */
+	async processSubDocument(file: TFile, context: ProcessContext): Promise<MarkdownProcessResult> {
+		try {
+			// 添加到已处理文件集合
+			const normalizedPath = normalizePath(file.path);
+			context.processedFiles.add(normalizedPath);
+
+			// 读取文件内容
+			const content = await this.app.vault.read(file);
+
+			// 创建子上下文
+			const subContext: ProcessContext = {
+				...context,
+				currentDepth: context.currentDepth + 1
+			};
+
+			// 重置本地文件列表（为子文档处理）
+			const originalFiles = [...this.localFiles];
+			this.localFiles = [];
+
+			// 处理子文档内容
+			const processedContent = this.processCompleteWithContext(content, subContext);
+
+			// 获取子文档的文件列表
+			const subDocumentFiles = [...this.localFiles];
+
+			// 恢复原始文件列表
+			this.localFiles = originalFiles;
+
+			return {
+				content: processedContent,
+				localFiles: subDocumentFiles
+			};
+		} catch (error) {
+			console.error(`Error processing sub-document ${file.path}:`, error);
+			return {
+				content: `❌ 无法读取子文档: ${file.basename}`,
+				localFiles: []
+			};
+		}
+	}
+
+	/**
+	 * 带上下文的完整处理方法
+	 */
+	private processCompleteWithContext(content: string, context?: ProcessContext): string {
+		let processedContent = content;
+
+		// 按顺序处理各种语法
+		processedContent = this.processWikiLinks(processedContent, context);
+		processedContent = this.processBlockReferences(processedContent);
+		processedContent = this.processEmbeds(processedContent);
+		processedContent = this.processImages(processedContent);
+		processedContent = this.processTags(processedContent);
+		processedContent = this.processHighlights(processedContent);
+		processedContent = this.processMathFormulas(processedContent);
+		processedContent = this.processCodeBlocks(processedContent);
+		processedContent = this.cleanupWhitespace(processedContent);
+
+		return processedContent;
 	}
 }

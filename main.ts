@@ -16,7 +16,7 @@ export default class FeishuPlugin extends Plugin {
 
 		// 初始化服务
 		this.feishuApi = new FeishuApiService(this.settings, this.app);
-		this.markdownProcessor = new MarkdownProcessor();
+		this.markdownProcessor = new MarkdownProcessor(this.app);
 
 		// 注册自定义协议处理器，实现自动授权回调
 		this.registerObsidianProtocolHandler('feishu-auth', (params) => {
