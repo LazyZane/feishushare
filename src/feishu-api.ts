@@ -1902,14 +1902,8 @@ export class FeishuApiService {
 	 */
 	private async replaceTextInBlock(documentId: string, blockId: string, newText: string): Promise<void> {
 		try {
-			const response = await requestUrl({
-				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${blockId}`,
-				method: 'PATCH',
-				headers: {
-					'Authorization': `Bearer ${this.settings.accessToken}`,
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({
+			const requestData = {
+				update_text_elements: {
 					elements: [
 						{
 							text_run: {
@@ -1917,10 +1911,24 @@ export class FeishuApiService {
 							}
 						}
 					]
-				})
+				}
+			};
+
+			console.log(`🔧 Replacing text in block ${blockId} with: "${newText}"`);
+
+			const response = await requestUrl({
+				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${blockId}`,
+				method: 'PATCH',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify(requestData)
 			});
 
 			const data = response.json || JSON.parse(response.text);
+			console.log(`📋 Replace text response:`, data);
+
 			if (data.code !== 0) {
 				throw new Error(data.msg || '替换文本失败');
 			}
