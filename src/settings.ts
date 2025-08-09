@@ -130,6 +130,39 @@ export class FeishuSettingTab extends PluginSettingTab {
 				});
 		}
 
+		// 内容处理设置部分
+		containerEl.createEl('h3', { text: '📝 内容处理设置' });
+
+		// 文档标题来源设置
+		new Setting(containerEl)
+			.setName('文档标题来源')
+			.setDesc('选择生成的飞书文档标题使用哪个来源')
+			.addDropdown(dropdown => {
+				dropdown
+					.addOption('filename', '文件名 (Filename)')
+					.addOption('frontmatter', 'YAML Front Matter 的 "title" 属性')
+					.setValue(this.plugin.settings.titleSource)
+					.onChange(async (value: 'filename' | 'frontmatter') => {
+						this.plugin.settings.titleSource = value;
+						await this.plugin.saveSettings();
+					});
+			});
+
+		// Front Matter 处理设置
+		new Setting(containerEl)
+			.setName('Front Matter 处理')
+			.setDesc('选择如何处理笔记顶部的 YAML 属性区')
+			.addDropdown(dropdown => {
+				dropdown
+					.addOption('remove', '移除 (Remove)')
+					.addOption('keep-as-code', '保留为代码块 (Keep as Code Block)')
+					.setValue(this.plugin.settings.frontMatterHandling)
+					.onChange(async (value: 'remove' | 'keep-as-code') => {
+						this.plugin.settings.frontMatterHandling = value;
+						await this.plugin.saveSettings();
+					});
+			});
+
 		// 文件夹设置部分（仅在已授权时显示）
 		if (this.plugin.settings.userInfo) {
 			containerEl.createEl('h3', { text: '📁 默认文件夹' });

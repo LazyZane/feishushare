@@ -181,12 +181,20 @@ export default class FeishuPlugin extends Plugin {
 			this.log('Reading file content');
 			const rawContent = await this.app.vault.read(file);
 
-			// 获取文件标题（去掉.md扩展名）
-			const title = file.basename;
-			this.log(`Processing file with title: ${title}`);
+			// 使用Markdown处理器处理内容（包含文件信息和Front Matter处理）
+			const processResult = this.markdownProcessor.processCompleteWithFiles(
+				rawContent,
+				3, // maxDepth
+				this.settings.frontMatterHandling
+			);
 
-			// 使用Markdown处理器处理内容（包含文件信息）
-			const processResult = this.markdownProcessor.processCompleteWithFiles(rawContent);
+			// 根据设置提取文档标题
+			const title = this.markdownProcessor.extractTitle(
+				file.basename,
+				processResult.frontMatter,
+				this.settings.titleSource
+			);
+			this.log(`Processing file with title: ${title}`);
 
 			// 调用API分享（内部会自动检查和刷新token，如果需要重新授权会等待完成）
 			const result = await this.feishuApi.shareMarkdownWithFiles(title, processResult, statusNotice);

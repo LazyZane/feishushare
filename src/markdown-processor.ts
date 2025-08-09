@@ -1,5 +1,6 @@
 import { App, TFile, normalizePath } from 'obsidian';
-import { LocalFileInfo, MarkdownProcessResult, ProcessContext } from './types';
+import { LocalFileInfo, MarkdownProcessResult, ProcessContext, FrontMatterData } from './types';
+import { CALLOUT_TYPE_MAPPING } from './constants';
 
 /**
  * Markdown 内容处理器
@@ -174,12 +175,14 @@ export class MarkdownProcessor {
 	 * 处理 Obsidian 特有的代码块语法
 	 */
 	private processCodeBlocks(content: string): string {
-		// 处理带有 Obsidian 插件的代码块
-		return content.replace(/```(\w+)[\s\S]*?```/g, (match) => {
-			// 保持代码块原样，但可以在这里添加特殊处理
+		// 保持所有代码块原样，包括 Mermaid
+		return content.replace(/```(\w+)[\s\S]*?```/g, (match, language) => {
+			// 保持所有代码块原样
 			return match;
 		});
 	}
+
+
 
 	/**
 	 * 处理数学公式
@@ -202,10 +205,80 @@ export class MarkdownProcessor {
 	 * 处理 Obsidian 的高亮语法
 	 */
 	private processHighlights(content: string): string {
-		// 处理高亮 ==text==
+		// 处理高亮 ==text==，转换为带有高亮标记的文本
 		return content.replace(/==([^=]+)==/g, (match, text) => {
-			return `**${text}**`; // 转换为粗体
+			return `<mark>${text}</mark>`; // 使用 HTML mark 标签表示高亮
 		});
+	}
+
+	/**
+	 * 处理 Obsidian Callout 块
+	 * 使用改进的 Markdown 格式化方案，在飞书中显示为引用块
+	 */
+	private processCallouts(content: string): string {
+		// 改进的正则表达式，支持折叠语法和更复杂的内容
+		// 格式：> [!TYPE]- 或 > [!TYPE] 标题（可选）
+		// 后续行：> 内容（可能包含空行）
+		const calloutRegex = /^>\s*\[!([^\]]+)\](-?)\s*([^\n]*)\n((?:(?:>[^\n]*|)\n?)*?)(?=\n(?!>)|$)/gm;
+
+		return content.replace(calloutRegex, (match, type, foldable, title, body) => {
+			// 获取 callout 类型（转为小写，移除可能的折叠标记）
+			const calloutType = type.toLowerCase().trim();
+
+			// 从映射表中获取样式信息，如果没有找到则使用默认样式
+			const styleInfo = CALLOUT_TYPE_MAPPING[calloutType] || CALLOUT_TYPE_MAPPING['default'];
+
+			// 处理标题（如果有的话）
+			let calloutTitle = title.trim() || styleInfo.title;
+
+			// 转义标题中的 Markdown 特殊字符，避免格式冲突
+			calloutTitle = this.escapeMarkdownInTitle(calloutTitle);
+
+			// 处理内容，移除每行开头的 > 符号，保持原有的格式结构
+			const lines = body.split('\n');
+			const processedLines = lines
+				.map(line => {
+					// 移除开头的 > 符号，但保持其他格式
+					if (line.startsWith('>')) {
+						return line.replace(/^>\s?/, '');
+					}
+					return line; // 保持空行
+				})
+				.filter((line, index, arr) => {
+					// 移除末尾的连续空行，但保持中间的空行
+					if (line === '' && index === arr.length - 1) {
+						return false;
+					}
+					return true;
+				});
+
+			const calloutContent = processedLines.join('\n');
+
+			// 生成改进的引用块格式
+			const formattedTitle = `**${styleInfo.emoji} ${calloutTitle}**`;
+
+			// 将内容的每一行都加上引用符号，保持原有的缩进和格式
+			const quotedContent = calloutContent
+				.split('\n')
+				.map(line => {
+					if (line.trim() === '') {
+						return '>'; // 空行也要有引用符号
+					}
+					return `> ${line}`;
+				})
+				.join('\n');
+
+			return `\n> ${formattedTitle}\n>\n${quotedContent}\n\n`;
+		});
+	}
+
+	/**
+	 * 处理标题中的特殊字符，避免与外层粗体标记冲突
+	 */
+	private escapeMarkdownInTitle(title: string): string {
+		// 只处理可能与外层 ** 冲突的字符
+		// 将 ** 替换为单个 * 以避免冲突，其他字符保持原样
+		return title.replace(/\*\*/g, '*');
 	}
 
 	/**
@@ -231,9 +304,16 @@ export class MarkdownProcessor {
 	/**
 	 * 完整处理并返回文件信息（新方法）
 	 */
-	processCompleteWithFiles(content: string, maxDepth: number = 3): MarkdownProcessResult {
+	processCompleteWithFiles(
+		content: string,
+		maxDepth: number = 3,
+		frontMatterHandling: 'remove' | 'keep-as-code' = 'remove'
+	): MarkdownProcessResult {
 		// 重置本地文件列表
 		this.localFiles = [];
+
+		// 处理 Front Matter
+		const { content: processedContent, frontMatter } = this.processFrontMatter(content, frontMatterHandling);
 
 		// 创建处理上下文
 		const context: ProcessContext = {
@@ -242,11 +322,13 @@ export class MarkdownProcessor {
 			processedFiles: new Set<string>()
 		};
 
-		const processedContent = this.processCompleteWithContext(content, context);
+		const finalContent = this.processCompleteWithContext(processedContent, context);
 
 		return {
-			content: processedContent,
-			localFiles: [...this.localFiles]
+			content: finalContent,
+			localFiles: [...this.localFiles],
+			frontMatter: frontMatter,
+			extractedTitle: frontMatter?.title || null
 		};
 	}
 
@@ -384,13 +466,17 @@ export class MarkdownProcessor {
 
 			return {
 				content: processedContent,
-				localFiles: subDocumentFiles
+				localFiles: subDocumentFiles,
+				frontMatter: null,
+				extractedTitle: null
 			};
 		} catch (error) {
 			console.error(`Error processing sub-document ${file.path}:`, error);
 			return {
 				content: `❌ 无法读取子文档: ${file.basename}`,
-				localFiles: []
+				localFiles: [],
+				frontMatter: null,
+				extractedTitle: null
 			};
 		}
 	}
@@ -402,6 +488,7 @@ export class MarkdownProcessor {
 		let processedContent = content;
 
 		// 按顺序处理各种语法
+		processedContent = this.processCallouts(processedContent); // 先处理 Callout，因为它们是块级元素
 		processedContent = this.processWikiLinks(processedContent, context);
 		processedContent = this.processBlockReferences(processedContent);
 		processedContent = this.processEmbeds(processedContent);
@@ -413,5 +500,145 @@ export class MarkdownProcessor {
 		processedContent = this.cleanupWhitespace(processedContent);
 
 		return processedContent;
+	}
+
+	/**
+	 * 解析 YAML Front Matter
+	 * @param content 原始内容
+	 * @returns 解析结果，包含 Front Matter 数据和剩余内容
+	 */
+	private parseFrontMatter(content: string): { frontMatter: FrontMatterData | null, content: string } {
+		// 检查是否以 --- 开头
+		if (!content.startsWith('---\n') && !content.startsWith('---\r\n')) {
+			return { frontMatter: null, content };
+		}
+
+		// 查找结束的 ---
+		const lines = content.split('\n');
+		let endIndex = -1;
+
+		for (let i = 1; i < lines.length; i++) {
+			if (lines[i].trim() === '---') {
+				endIndex = i;
+				break;
+			}
+		}
+
+		if (endIndex === -1) {
+			// 没有找到结束标记，不是有效的 Front Matter
+			return { frontMatter: null, content };
+		}
+
+		// 提取 YAML 内容
+		const yamlContent = lines.slice(1, endIndex).join('\n');
+		const remainingContent = lines.slice(endIndex + 1).join('\n');
+
+		try {
+			// 简单的 YAML 解析（仅支持基本的 key: value 格式）
+			const frontMatter = this.parseSimpleYaml(yamlContent);
+			return { frontMatter, content: remainingContent };
+		} catch (error) {
+			console.warn('Failed to parse Front Matter:', error);
+			return { frontMatter: null, content };
+		}
+	}
+
+	/**
+	 * 简单的 YAML 解析器（仅支持基本的 key: value 格式）
+	 * @param yamlContent YAML 内容
+	 * @returns 解析后的对象
+	 */
+	private parseSimpleYaml(yamlContent: string): FrontMatterData {
+		const result: FrontMatterData = {};
+		const lines = yamlContent.split('\n');
+
+		for (const line of lines) {
+			const trimmedLine = line.trim();
+			if (!trimmedLine || trimmedLine.startsWith('#')) {
+				continue; // 跳过空行和注释
+			}
+
+			const colonIndex = trimmedLine.indexOf(':');
+			if (colonIndex === -1) {
+				continue; // 跳过无效行
+			}
+
+			const key = trimmedLine.substring(0, colonIndex).trim();
+			let value = trimmedLine.substring(colonIndex + 1).trim();
+
+			// 移除引号
+			if ((value.startsWith('"') && value.endsWith('"')) ||
+				(value.startsWith("'") && value.endsWith("'"))) {
+				value = value.slice(1, -1);
+			}
+
+			result[key] = value;
+		}
+
+		return result;
+	}
+
+	/**
+	 * 根据设置处理 Front Matter
+	 * @param content 原始内容
+	 * @param frontMatterHandling 处理方式
+	 * @returns 处理后的内容和 Front Matter 数据
+	 */
+	processFrontMatter(content: string, frontMatterHandling: 'remove' | 'keep-as-code'): {
+		content: string,
+		frontMatter: FrontMatterData | null
+	} {
+		const { frontMatter, content: contentWithoutFrontMatter } = this.parseFrontMatter(content);
+
+		if (!frontMatter) {
+			return { content, frontMatter: null };
+		}
+
+		if (frontMatterHandling === 'remove') {
+			return { content: contentWithoutFrontMatter, frontMatter };
+		} else {
+			// 保留为代码块
+			const yamlLines = content.split('\n');
+			let endIndex = -1;
+
+			for (let i = 1; i < yamlLines.length; i++) {
+				if (yamlLines[i].trim() === '---') {
+					endIndex = i;
+					break;
+				}
+			}
+
+			if (endIndex !== -1) {
+				const yamlContent = yamlLines.slice(1, endIndex).join('\n');
+				const codeBlock = '```yaml\n' + yamlContent + '\n```\n\n';
+				return {
+					content: codeBlock + contentWithoutFrontMatter,
+					frontMatter
+				};
+			}
+		}
+
+		return { content: contentWithoutFrontMatter, frontMatter };
+	}
+
+	/**
+	 * 根据设置提取文档标题
+	 * @param fileName 文件名（不含扩展名）
+	 * @param frontMatter Front Matter 数据
+	 * @param titleSource 标题来源设置
+	 * @returns 提取的标题
+	 */
+	extractTitle(
+		fileName: string,
+		frontMatter: FrontMatterData | null,
+		titleSource: 'filename' | 'frontmatter'
+	): string {
+		if (titleSource === 'frontmatter' && frontMatter?.title) {
+			// 优先使用 Front Matter 中的 title
+			return frontMatter.title;
+		}
+
+		// 回退到文件名
+		return fileName;
 	}
 }

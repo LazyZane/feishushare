@@ -2,6 +2,16 @@
  * 飞书分享插件类型定义
  */
 
+/**
+ * 文档标题来源选项
+ */
+export type TitleSource = 'filename' | 'frontmatter';
+
+/**
+ * Front Matter 处理方式选项
+ */
+export type FrontMatterHandling = 'remove' | 'keep-as-code';
+
 export interface FeishuSettings {
 	appId: string;
 	appSecret: string;
@@ -11,6 +21,8 @@ export interface FeishuSettings {
 	userInfo: FeishuUserInfo | null;
 	defaultFolderId: string;
 	defaultFolderName: string;
+	titleSource: TitleSource;
+	frontMatterHandling: FrontMatterHandling;
 }
 
 export interface FeishuUserInfo {
@@ -94,11 +106,21 @@ export interface LocalFileInfo {
 }
 
 /**
+ * Front Matter 解析结果
+ */
+export interface FrontMatterData {
+	title?: string;
+	[key: string]: any;
+}
+
+/**
  * Markdown处理结果
  */
 export interface MarkdownProcessResult {
 	content: string;
 	localFiles: LocalFileInfo[];
+	frontMatter: FrontMatterData | null;
+	extractedTitle: string | null;
 }
 
 /**

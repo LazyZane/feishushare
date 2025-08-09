@@ -566,9 +566,9 @@ export class FeishuApiService {
 				parts.push(`Content-Disposition: form-data; name="parent_node"`);
 				parts.push('');
 				parts.push(this.settings.defaultFolderId);
-				console.log('📁 Upload: Using custom folder:', this.settings.defaultFolderId, '(' + this.settings.defaultFolderName + ')');
+				// 使用自定义文件夹
 			} else {
-				console.log('📁 Upload: Using root folder (我的空间) - no parent_node specified');
+				// 使用根文件夹
 			}
 
 			// 5. file (最后)
@@ -885,13 +885,7 @@ export class FeishuApiService {
 				}
 			};
 
-			if (this.settings.defaultFolderId && this.settings.defaultFolderId !== '' && this.settings.defaultFolderId !== 'nodcn2EG5YG1i5Rsh5uZs0FsUje') {
-				console.log('✅ Import: Using custom folder:', this.settings.defaultFolderId, '(' + this.settings.defaultFolderName + ')');
-			} else {
-				console.log('✅ Import: Using default root folder (我的空间)');
-			}
-
-			console.log('Import task request:', JSON.stringify(importData, null, 2));
+			// 使用配置的文件夹或默认根文件夹
 
 			const response = await requestUrl({
 				url: `${FEISHU_CONFIG.BASE_URL}/drive/v1/import_tasks`,
@@ -904,7 +898,6 @@ export class FeishuApiService {
 			});
 
 			const data = response.json || JSON.parse(response.text);
-			console.log('Import task response:', JSON.stringify(data, null, 2));
 
 			if (data.code === 0) {
 				return {
@@ -931,7 +924,6 @@ export class FeishuApiService {
 	 * 等待导入完成（带超时）
 	 */
 	private async waitForImportCompletionWithTimeout(ticket: string, timeoutMs: number): Promise<{success: boolean, documentToken?: string, error?: string}> {
-		console.log(`🚀 [NEW CODE] Starting import completion check with ticket: ${ticket}, timeout: ${timeoutMs}ms`);
 		const startTime = Date.now();
 		const maxAttempts = 25;
 
@@ -1039,11 +1031,9 @@ export class FeishuApiService {
 			});
 
 			const data = response.json || JSON.parse(response.text);
-			console.log('📋 Import status response:', JSON.stringify(data, null, 2));
 
 			if (data.code === 0) {
 				const result = data.data.result;
-				console.log(`📊 Import status: ${result.job_status}, token: ${result.token || 'none'}`);
 				return {
 					success: true,
 					status: result.job_status,
@@ -1116,7 +1106,7 @@ export class FeishuApiService {
 	}
 
 	/**
-	 * 查找文档中的占位符文本块
+	 * 查找文档中的占位符文本块（优化版本）
 	 */
 	private async findPlaceholderBlocks(documentId: string, localFiles: LocalFileInfo[]): Promise<PlaceholderBlock[]> {
 		try {
@@ -1124,24 +1114,28 @@ export class FeishuApiService {
 			let pageToken = '';
 			let hasMore = true;
 
-			// 创建占位符到文件信息的映射
-			const placeholderMap = new Map<string, LocalFileInfo>();
-			localFiles.forEach(file => {
-				placeholderMap.set(file.placeholder, file);
-			});
+			// 预编译占位符模式（方案3：智能搜索优化）
+			const placeholderPatterns = this.compilePlaceholderPatterns(localFiles);
+			const remainingPlaceholders = new Set(localFiles.map(f => f.placeholder));
 
-			while (hasMore) {
+			console.log(`🔍 Searching for ${remainingPlaceholders.size} placeholders in document...`);
+
+			while (hasMore && remainingPlaceholders.size > 0) { // 方案1：早期退出
+				// 构建查询参数
+				const params = new URLSearchParams({
+					page_size: '500'
+				});
+				if (pageToken) {
+					params.append('page_token', pageToken);
+				}
+
 				const response = await requestUrl({
-					url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks`,
+					url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks?${params.toString()}`,
 					method: 'GET',
 					headers: {
 						'Authorization': `Bearer ${this.settings.accessToken}`,
 						'Content-Type': 'application/json'
-					},
-					body: JSON.stringify({
-						page_size: 500,
-						page_token: pageToken
-					})
+					}
 				});
 
 				const data: FeishuDocBlocksResponse = response.json || JSON.parse(response.text);
@@ -1150,49 +1144,142 @@ export class FeishuApiService {
 					throw new Error(data.msg || '获取文档块失败');
 				}
 
-				// 遍历所有块，查找包含占位符的文本块
-				data.data.items.forEach((block, index) => {
-					if (block.text && block.text.elements) {
-						block.text.elements.forEach(element => {
-							if (element.text_run && element.text_run.content) {
-								const content = element.text_run.content;
-								console.log(`🔍 Checking block content: "${content}"`);
+				// 优化的块遍历逻辑
+				const foundInThisPage = this.searchPlaceholdersInBlocks(
+					data.data.items,
+					placeholderPatterns,
+					remainingPlaceholders
+				);
 
-								// 检查是否包含占位符（支持多种格式）
-								for (const [placeholder, fileInfo] of placeholderMap) {
-									// 原始格式：__FEISHU_FILE_timestamp_randomid__
-									// 飞书处理后格式：!FEISHU_FILE_timestamp_randomid
-									const cleanPlaceholder = placeholder.replace(/^__/, '').replace(/__$/, '');
+				placeholderBlocks.push(...foundInThisPage);
 
-									if (content.includes(placeholder) ||
-										content.includes(`!${cleanPlaceholder}`) ||
-										content.includes(cleanPlaceholder)) {
-										console.log(`✅ Found placeholder match: "${placeholder}" in "${content}"`);
-										placeholderBlocks.push({
-											blockId: block.block_id,
-											parentId: block.parent_id,
-											index: index,
-											placeholder: placeholder,
-											fileInfo: fileInfo
-										});
-									}
-								}
-							}
-						});
-					}
-				});
+				// 方案1：早期退出 - 所有占位符都找到了就停止
+				if (remainingPlaceholders.size === 0) {
+					console.log(`✅ All ${localFiles.length} placeholders found, stopping search early`);
+					break;
+				}
 
 				hasMore = data.data.has_more;
 				pageToken = data.data.page_token;
 			}
 
-			console.log(`🔍 Found ${placeholderBlocks.length} placeholder blocks`);
+			console.log(`🎯 Found ${placeholderBlocks.length}/${localFiles.length} placeholder blocks`);
 			return placeholderBlocks;
 
 		} catch (error) {
 			console.error('Find placeholder blocks error:', error);
 			throw error;
 		}
+	}
+
+	/**
+	 * 预编译占位符模式（方案3优化）
+	 */
+	private compilePlaceholderPatterns(localFiles: LocalFileInfo[]): Map<string, {fileInfo: LocalFileInfo, patterns: RegExp[]}> {
+		const patterns = new Map<string, {fileInfo: LocalFileInfo, patterns: RegExp[]}>();
+
+		localFiles.forEach(fileInfo => {
+			const placeholder = fileInfo.placeholder;
+			const cleanPlaceholder = placeholder.replace(/^__/, '').replace(/__$/, '');
+
+			// 预编译所有可能的占位符格式的正则表达式
+			const regexPatterns = [
+				new RegExp(this.escapeRegExp(placeholder)), // 原始格式
+				new RegExp(this.escapeRegExp(`!${cleanPlaceholder}`)), // 飞书处理后格式
+				new RegExp(this.escapeRegExp(cleanPlaceholder)) // 清理后格式
+			];
+
+			patterns.set(placeholder, {
+				fileInfo,
+				patterns: regexPatterns
+			});
+		});
+
+		return patterns;
+	}
+
+	/**
+	 * 在块列表中搜索占位符（优化版本）
+	 */
+	private searchPlaceholdersInBlocks(
+		blocks: any[],
+		placeholderPatterns: Map<string, {fileInfo: LocalFileInfo, patterns: RegExp[]}>,
+		remainingPlaceholders: Set<string>
+	): PlaceholderBlock[] {
+		const foundBlocks: PlaceholderBlock[] = [];
+
+		for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
+			const block = blocks[blockIndex];
+
+			// 只处理文本块
+			if (!block.text || !block.text.elements) {
+				continue;
+			}
+
+			// 提取块的所有文本内容
+			const blockContent = this.extractBlockTextContent(block);
+
+			// 如果块内容不包含占位符特征，跳过
+			if (!this.hasPlaceholderFeatures(blockContent)) {
+				continue;
+			}
+
+			// 检查剩余的占位符
+			for (const placeholder of remainingPlaceholders) {
+				const patternInfo = placeholderPatterns.get(placeholder);
+				if (!patternInfo) continue;
+
+				// 使用预编译的正则表达式进行匹配
+				const isMatch = patternInfo.patterns.some(pattern => pattern.test(blockContent));
+
+				if (isMatch) {
+					console.log(`✅ Found placeholder: "${placeholder}" in block ${block.block_id}`);
+
+					foundBlocks.push({
+						blockId: block.block_id,
+						parentId: block.parent_id,
+						index: blockIndex,
+						placeholder: placeholder,
+						fileInfo: patternInfo.fileInfo
+					});
+
+					// 从剩余列表中移除已找到的占位符
+					remainingPlaceholders.delete(placeholder);
+
+					// 如果所有占位符都找到了，可以提前退出
+					if (remainingPlaceholders.size === 0) {
+						return foundBlocks;
+					}
+				}
+			}
+		}
+
+		return foundBlocks;
+	}
+
+	/**
+	 * 提取块的文本内容
+	 */
+	private extractBlockTextContent(block: any): string {
+		return block.text.elements
+			.filter((element: any) => element.text_run && element.text_run.content)
+			.map((element: any) => element.text_run.content)
+			.join('');
+	}
+
+	/**
+	 * 检查文本是否包含占位符特征（快速预筛选）
+	 */
+	private hasPlaceholderFeatures(content: string): boolean {
+		// 快速检查是否包含占位符的特征字符串
+		return content.includes('FEISHU_FILE_') || content.includes('__FEISHU_FILE_');
+	}
+
+	/**
+	 * 转义正则表达式特殊字符
+	 */
+	private escapeRegExp(string: string): string {
+		return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 	}
 
 	/**
@@ -1213,8 +1300,6 @@ export class FeishuApiService {
 				]
 			};
 
-			console.log(`🔧 Inserting ${placeholderBlock.fileInfo.isImage ? 'image' : 'file'} block:`, requestData);
-
 			const response = await requestUrl({
 				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${placeholderBlock.parentId}/children`,
 				method: 'POST',
@@ -1226,7 +1311,6 @@ export class FeishuApiService {
 			});
 
 			const data: FeishuBlockCreateResponse = response.json || JSON.parse(response.text);
-			console.log(`📋 Insert block response:`, data);
 
 			if (data.code !== 0) {
 				throw new Error(data.msg || '插入文件块失败');
@@ -1237,17 +1321,13 @@ export class FeishuApiService {
 
 			// 对于文件块，检查是否返回了View Block，如果是则需要获取其子块（File Block）
 			if (!placeholderBlock.fileInfo.isImage && createdBlock.block_type === 33) {
-				console.log(`📋 Created View Block for file, getting child File Block...`);
 				// 如果创建的是View Block（block_type: 33），需要获取其子块（File Block）
 				if (createdBlock.children && createdBlock.children.length > 0) {
 					targetBlockId = createdBlock.children[0];
-					console.log(`✅ Found File Block ID: ${targetBlockId}`);
 				} else {
 					console.warn('⚠️ View Block created but no child File Block found');
 				}
 			}
-
-			console.log(`✅ Inserted ${placeholderBlock.fileInfo.isImage ? 'image' : 'file'} block: ${targetBlockId}`);
 			return targetBlockId;
 
 		} catch (error) {
