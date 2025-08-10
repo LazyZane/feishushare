@@ -288,7 +288,34 @@ export class FeishuApiService {
 					if (finalResult.success && finalResult.documentToken) {
 						const docUrl = `https://feishu.cn/docx/${finalResult.documentToken}`;
 
-						// 第四步：处理子文档和文件上传（如果有本地文件）
+						// 第四步：并行处理权限设置和源文件删除
+						const parallelTasks: Promise<void>[] = [];
+
+						// 权限设置任务
+						if (this.settings.enableLinkShare && finalResult.documentToken) {
+							const permissionTask = (async () => {
+								try {
+									if (statusNotice) {
+										statusNotice.setMessage('🔗 正在设置文档分享权限...');
+									}
+
+									// 新创建的文档，跳过权限检查直接设置
+									await this.setDocumentSharePermissions(finalResult.documentToken!, true);
+									console.log('✅ Document share permissions set successfully');
+								} catch (permissionError) {
+									console.warn('⚠️ Failed to set document share permissions:', permissionError);
+									// 权限设置失败不影响主流程
+								}
+							})();
+							parallelTasks.push(permissionTask);
+						}
+
+						// 等待所有并行任务完成
+						if (parallelTasks.length > 0) {
+							await Promise.allSettled(parallelTasks);
+						}
+
+						// 第五步：处理子文档和文件上传（如果有本地文件）
 						if (processResult.localFiles.length > 0) {
 							try {
 								// 分离子文档和普通文件
@@ -316,7 +343,7 @@ export class FeishuApiService {
 							}
 						}
 
-						// 第五步：删除源文件（转换成功后）
+						// 第六步：删除源文件（转换成功后）
 						try {
 							await this.deleteSourceFile(uploadResult.fileToken);
 						} catch (deleteError) {
@@ -416,13 +443,44 @@ export class FeishuApiService {
 					const finalResult = await this.waitForImportCompletionWithTimeout(importResult.ticket, 15000);
 					if (finalResult.success && finalResult.documentToken) {
 						const docUrl = `https://feishu.cn/docx/${finalResult.documentToken}`;
-						// 第四步：删除源文件（转换成功后）
-						try {
-							await this.deleteSourceFile(uploadResult.fileToken);
-							} catch (deleteError) {
-							console.warn('⚠️ Failed to delete source file:', deleteError.message);
-							// 不影响主流程，继续返回成功结果
+
+						// 第四步：并行处理权限设置和源文件删除
+						const parallelTasks: Promise<void>[] = [];
+
+						// 权限设置任务
+						if (this.settings.enableLinkShare && finalResult.documentToken) {
+							const permissionTask = (async () => {
+								try {
+									if (statusNotice) {
+										statusNotice.setMessage('🔗 正在设置文档分享权限...');
+									}
+
+									// 新创建的文档，跳过权限检查直接设置
+									await this.setDocumentSharePermissions(finalResult.documentToken!, true);
+									console.log('✅ Document share permissions set successfully');
+								} catch (permissionError) {
+									console.warn('⚠️ Failed to set document share permissions:', permissionError);
+									// 权限设置失败不影响主流程
+								}
+							})();
+							parallelTasks.push(permissionTask);
 						}
+
+						// 源文件删除任务
+						const deleteTask = (async () => {
+							try {
+								await this.deleteSourceFile(uploadResult.fileToken!);
+							} catch (deleteError) {
+								console.warn('⚠️ Failed to delete source file:', deleteError);
+								// 不影响主流程，继续返回成功结果
+							}
+						})();
+						parallelTasks.push(deleteTask);
+
+						// 等待所有并行任务完成
+						await Promise.allSettled(parallelTasks);
+
+
 
 						return {
 							success: true,
@@ -944,7 +1002,6 @@ export class FeishuApiService {
 
 				if (result.success && (result.status === 3 || result.status === 0)) {
 					if (result.documentToken) {
-						const totalTime = Date.now() - startTime;
 						return {
 							success: true,
 							documentToken: result.documentToken
@@ -1062,7 +1119,7 @@ export class FeishuApiService {
 	private async deleteSourceFile(fileToken: string): Promise<void> {
 		try {
 			// 方法1：尝试移动到回收站
-			let response;
+			let response: any;
 			try {
 				response = await requestUrl({
 					url: `${FEISHU_CONFIG.BASE_URL}/drive/v1/files/${fileToken}/trash`,
@@ -1482,28 +1539,122 @@ export class FeishuApiService {
 		}
 	}
 
+
+
 	/**
-	 * 替换占位符文本为文件名
+	 * 查找仍然存在的占位符
 	 */
-	private async replacePlaceholderWithFileName(documentId: string, placeholderBlock: PlaceholderBlock, fileName: string): Promise<void> {
+	private async findRemainingPlaceholders(documentId: string, placeholderBlocks: PlaceholderBlock[]): Promise<PlaceholderBlock[]> {
 		try {
-			// 替换占位符文本为文件名
-			const requestData = {
+			console.log(`🔍 Checking ${placeholderBlocks.length} placeholders for remaining content...`);
+			const remainingPlaceholders: PlaceholderBlock[] = [];
+			const checkedBlocks = new Set<string>(); // 防止重复检查
+
+			// 获取文档的所有块
+			let pageToken = '';
+			let hasMore = true;
+			let allBlocks: any[] = [];
+
+			// 先收集所有块
+			while (hasMore) {
+				const response = await requestUrl({
+					url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks?page_size=500${pageToken ? `&page_token=${pageToken}` : ''}`,
+					method: 'GET',
+					headers: {
+						'Authorization': `Bearer ${this.settings.accessToken}`,
+						'Content-Type': 'application/json'
+					}
+				});
+
+				const data: FeishuDocBlocksResponse = response.json || JSON.parse(response.text);
+
+				if (data.code !== 0) {
+					console.warn('Failed to get document blocks for placeholder check:', data.msg);
+					break;
+				}
+
+				allBlocks.push(...data.data.items);
+				hasMore = data.data.has_more;
+				pageToken = data.data.page_token;
+			}
+
+			console.log(`📋 Retrieved ${allBlocks.length} blocks from document`);
+
+			// 检查每个占位符是否仍然存在
+			for (const placeholderBlock of placeholderBlocks) {
+				if (checkedBlocks.has(placeholderBlock.blockId)) {
+					continue; // 跳过已检查的块
+				}
+				checkedBlocks.add(placeholderBlock.blockId);
+
+				const block = allBlocks.find(item => item.block_id === placeholderBlock.blockId);
+				if (block && block.text) {
+					const blockContent = this.extractBlockTextContent(block);
+					console.log(`🔍 Checking block ${placeholderBlock.blockId}: "${blockContent.substring(0, 100)}..."`);
+
+					// 检查是否仍包含占位符文本（考虑多种格式）
+					const originalPlaceholder = placeholderBlock.placeholder; // __FEISHU_FILE_xxx__
+					const cleanPlaceholder = originalPlaceholder.replace(/^__/, '').replace(/__$/, ''); // FEISHU_FILE_xxx
+					const feishuPlaceholder = `!${cleanPlaceholder}!`; // !FEISHU_FILE_xxx!
+
+					const hasOriginal = blockContent.includes(originalPlaceholder);
+					const hasFeishu = blockContent.includes(feishuPlaceholder);
+					const hasClean = blockContent.includes(cleanPlaceholder);
+
+					if (hasOriginal || hasFeishu || hasClean) {
+						const foundFormat = hasOriginal ? 'original' : hasFeishu ? 'feishu' : 'clean';
+						console.log(`✅ Found remaining placeholder: ${originalPlaceholder} (format: ${foundFormat})`);
+						remainingPlaceholders.push(placeholderBlock);
+					} else {
+						console.log(`❌ Placeholder already cleaned: ${originalPlaceholder}`);
+					}
+				} else {
+					console.log(`⚠️ Block not found or has no text: ${placeholderBlock.blockId}`);
+				}
+			}
+
+			console.log(`🎯 Found ${remainingPlaceholders.length} remaining placeholders out of ${placeholderBlocks.length}`);
+			return remainingPlaceholders;
+
+		} catch (error) {
+			console.error('Error finding remaining placeholders:', error);
+			// 如果检查失败，返回所有占位符（保守处理）
+			console.log('🔄 Falling back to processing all placeholders due to error');
+			return placeholderBlocks;
+		}
+	}
+
+	/**
+	 * 批量替换占位符文本为空文本（优化版本）
+	 */
+	private async batchReplacePlaceholderText(documentId: string, placeholderBlocks: PlaceholderBlock[]): Promise<void> {
+		if (placeholderBlocks.length === 0) {
+			return;
+		}
+
+		try {
+			console.log(`🔧 Batch replacing ${placeholderBlocks.length} placeholder texts...`);
+
+			// 构建批量更新请求
+			const requests = placeholderBlocks.map(placeholderBlock => ({
+				block_id: placeholderBlock.blockId,
 				update_text_elements: {
 					elements: [
 						{
 							text_run: {
-								content: `📎 ${fileName}`
+								content: ""
 							}
 						}
 					]
 				}
+			}));
+
+			const requestData = {
+				requests: requests
 			};
 
-			console.log(`🔧 Replacing placeholder with filename: ${fileName}`);
-
 			const response = await requestUrl({
-				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${placeholderBlock.blockId}`,
+				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/batch_update`,
 				method: 'PATCH',
 				headers: {
 					'Authorization': `Bearer ${this.settings.accessToken}`,
@@ -1513,28 +1664,40 @@ export class FeishuApiService {
 			});
 
 			const data = response.json || JSON.parse(response.text);
-			console.log(`📋 Replace with filename response:`, data);
+			console.log(`📋 Batch replace placeholder response:`, data);
 
 			if (data.code !== 0) {
-				console.warn(`⚠️ Failed to replace with filename: ${data.msg}, trying empty text...`);
-				await this.replacePlaceholderText(documentId, placeholderBlock);
+				console.warn(`⚠️ Batch replace failed: ${data.msg}, falling back to individual replacement...`);
+				// 如果批量替换失败，回退到逐个替换
+				await this.fallbackIndividualReplace(documentId, placeholderBlocks);
 			} else {
-				console.log(`✅ Replaced placeholder with filename: ${fileName}`);
+				console.log(`✅ Successfully batch replaced ${placeholderBlocks.length} placeholder texts`);
 			}
 
 		} catch (error) {
-			console.error('Replace placeholder with filename error:', error);
-			// 如果替换失败，尝试空文本
+			console.error('Batch replace placeholder text error:', error);
+			// 如果批量替换失败，回退到逐个替换
+			await this.fallbackIndividualReplace(documentId, placeholderBlocks);
+		}
+	}
+
+	/**
+	 * 回退到逐个替换占位符文本
+	 */
+	private async fallbackIndividualReplace(documentId: string, placeholderBlocks: PlaceholderBlock[]): Promise<void> {
+		console.log(`🔄 Falling back to individual replacement for ${placeholderBlocks.length} blocks...`);
+
+		for (const placeholderBlock of placeholderBlocks) {
 			try {
 				await this.replacePlaceholderText(documentId, placeholderBlock);
-			} catch (fallbackError) {
-				console.error('All replacement methods failed:', fallbackError);
+			} catch (error) {
+				console.error(`❌ Failed to replace placeholder ${placeholderBlock.blockId}:`, error);
 			}
 		}
 	}
 
 	/**
-	 * 替换占位符文本为空文本
+	 * 替换占位符文本为空文本（单个）
 	 */
 	private async replacePlaceholderText(documentId: string, placeholderBlock: PlaceholderBlock): Promise<void> {
 		try {
@@ -1675,7 +1838,7 @@ export class FeishuApiService {
 	}
 
 	/**
-	 * 处理第三阶段：文件上传和替换占位符
+	 * 处理第三阶段：文件上传和替换占位符（优化版本）
 	 */
 	async processFileUploads(documentId: string, localFiles: LocalFileInfo[], statusNotice?: Notice): Promise<void> {
 		if (localFiles.length === 0) {
@@ -1702,42 +1865,49 @@ export class FeishuApiService {
 			const sortedPlaceholderBlocks = this.sortPlaceholdersByOriginalOrder(placeholderBlocks, localFiles);
 			console.log(`📋 Sorted placeholder blocks by original order`);
 
-			// 处理每个占位符块
-			for (let i = 0; i < sortedPlaceholderBlocks.length; i++) {
-				const placeholderBlock = sortedPlaceholderBlocks[i];
+			// 第二步：并行读取所有文件内容（优化：并发读取）
+			if (statusNotice) {
+				statusNotice.setMessage(`📖 正在并行读取 ${sortedPlaceholderBlocks.length} 个文件...`);
+			}
+
+			const fileReadPromises = sortedPlaceholderBlocks.map(async (placeholderBlock) => {
+				try {
+					const fileContent = await this.readLocalFile(placeholderBlock.fileInfo.originalPath);
+					return { placeholderBlock, fileContent, success: !!fileContent };
+				} catch (error) {
+					console.warn(`⚠️ Failed to read file: ${placeholderBlock.fileInfo.originalPath}`, error);
+					return { placeholderBlock, fileContent: null, success: false };
+				}
+			});
+
+			const fileReadResults = await Promise.all(fileReadPromises);
+			const validFiles = fileReadResults.filter(result => result.success);
+			console.log(`� Successfully read ${validFiles.length}/${sortedPlaceholderBlocks.length} files`);
+
+			// 第三步：按顺序处理文件上传（必须串行，因为API限制）
+			const processedBlocks: PlaceholderBlock[] = [];
+			for (let i = 0; i < validFiles.length; i++) {
+				const { placeholderBlock, fileContent } = validFiles[i];
 				const fileInfo = placeholderBlock.fileInfo;
 
 				if (statusNotice) {
-					statusNotice.setMessage(`📤 正在上传文件 ${i + 1}/${sortedPlaceholderBlocks.length}: ${fileInfo.fileName}...`);
+					statusNotice.setMessage(`📤 正在上传文件 ${i + 1}/${validFiles.length}: ${fileInfo.fileName}...`);
 				}
 
 				try {
-					// 第二步：读取本地文件内容
-					const fileContent = await this.readLocalFile(fileInfo.originalPath);
-					if (!fileContent) {
-						console.warn(`⚠️ Could not read file: ${fileInfo.originalPath}, skipping...`);
-						continue;
-					}
-
-					// 第三步：调整插入位置（考虑之前插入的文件块）
+					// 调整插入位置（考虑之前插入的文件块）
 					const adjustedPlaceholderBlock = {
 						...placeholderBlock,
-						index: placeholderBlock.index + i // 每插入一个文件，后续文件的位置需要向后移动
+						index: placeholderBlock.index + i
 					};
 					console.log(`📍 Adjusted insert position for ${fileInfo.fileName}: ${placeholderBlock.index} -> ${adjustedPlaceholderBlock.index}`);
 
-					// 第四步：先创建文件块并上传文件
+					// 创建文件块并上传文件
 					const newBlockId = await this.insertFileBlock(documentId, adjustedPlaceholderBlock);
-					const fileToken = await this.uploadFileToDocument(documentId, newBlockId, fileInfo, fileContent);
+					const fileToken = await this.uploadFileToDocument(documentId, newBlockId, fileInfo, fileContent!);
 					await this.setFileBlockContent(documentId, newBlockId, fileToken, fileInfo.isImage);
 
-					// 第五步：等待文件设置完成
-					console.log('⏳ Waiting 2 seconds for file content to be set...');
-					await new Promise(resolve => setTimeout(resolve, 2000));
-
-					// 第六步：替换占位符文本为空文本（移除占位符）
-					await this.replacePlaceholderText(documentId, placeholderBlock);
-
+					processedBlocks.push(placeholderBlock);
 					console.log(`✅ Successfully processed file: ${fileInfo.fileName}`);
 
 				} catch (fileError) {
@@ -1746,7 +1916,24 @@ export class FeishuApiService {
 				}
 			}
 
-			console.log(`🎉 File upload processing completed: ${sortedPlaceholderBlocks.length} files processed`);
+			// 第四步：批量替换占位符文本（优化：批量操作）
+			if (processedBlocks.length > 0) {
+				if (statusNotice) {
+					statusNotice.setMessage(`🔄 正在检查并清理 ${processedBlocks.length} 个占位符...`);
+				}
+
+				// 重新查找仍然存在的占位符（因为子文档处理可能已经清理了一些）
+				const remainingPlaceholders = await this.findRemainingPlaceholders(documentId, processedBlocks);
+
+				if (remainingPlaceholders.length > 0) {
+					console.log(`🔄 Found ${remainingPlaceholders.length} remaining placeholders to clean up`);
+					await this.batchReplacePlaceholderText(documentId, remainingPlaceholders);
+				} else {
+					console.log(`✅ All placeholders have already been cleaned up`);
+				}
+			}
+
+			console.log(`🎉 File upload processing completed: ${processedBlocks.length} files processed`);
 
 		} catch (error) {
 			console.error('Process file uploads error:', error);
@@ -1821,7 +2008,7 @@ export class FeishuApiService {
 				}
 
 				// 上传子文档到飞书
-				const subDocResult = await this.uploadSubDocument(subDoc.fileName, subDocContent);
+				const subDocResult = await this.uploadSubDocument(subDoc.fileName, subDocContent, statusNotice);
 				if (!subDocResult.success) {
 					console.warn(`⚠️ Failed to upload sub-document: ${subDoc.fileName}, error: ${subDocResult.error}`);
 					continue;
@@ -1888,7 +2075,7 @@ export class FeishuApiService {
 	/**
 	 * 上传子文档到飞书
 	 */
-	private async uploadSubDocument(title: string, content: string): Promise<SubDocumentResult> {
+	private async uploadSubDocument(title: string, content: string, statusNotice?: Notice): Promise<SubDocumentResult> {
 		try {
 			console.log(`📤 Uploading sub-document: ${title}`);
 
@@ -1918,12 +2105,40 @@ export class FeishuApiService {
 			if (finalResult.success && finalResult.documentToken) {
 				const docUrl = `https://feishu.cn/docx/${finalResult.documentToken}`;
 
-				// 删除源文件
-				try {
-					await this.deleteSourceFile(uploadResult.fileToken!);
-				} catch (deleteError) {
-					console.warn('⚠️ Failed to delete sub-document source file:', deleteError);
+				// 并行处理权限设置和源文件删除
+				const parallelTasks: Promise<void>[] = [];
+
+				// 权限设置任务（如果启用了链接分享）
+				if (this.settings.enableLinkShare) {
+					const permissionTask = (async () => {
+						try {
+							if (statusNotice) {
+								statusNotice.setMessage(`🔗 正在设置子文档权限: ${cleanTitle}...`);
+							}
+							console.log(`🔗 Setting permissions for sub-document: ${cleanTitle}`);
+							// 新创建的子文档，跳过权限检查直接设置
+							await this.setDocumentSharePermissions(finalResult.documentToken!, true);
+							console.log(`✅ Sub-document permissions set successfully: ${cleanTitle}`);
+						} catch (permissionError) {
+							console.warn(`⚠️ Failed to set sub-document permissions for ${cleanTitle}:`, permissionError);
+							// 权限设置失败不影响主流程
+						}
+					})();
+					parallelTasks.push(permissionTask);
 				}
+
+				// 源文件删除任务
+				const deleteTask = (async () => {
+					try {
+						await this.deleteSourceFile(uploadResult.fileToken!);
+					} catch (deleteError) {
+						console.warn('⚠️ Failed to delete sub-document source file:', deleteError);
+					}
+				})();
+				parallelTasks.push(deleteTask);
+
+				// 等待所有并行任务完成
+				await Promise.allSettled(parallelTasks);
 
 				return {
 					success: true,
@@ -2017,6 +2232,205 @@ export class FeishuApiService {
 
 		} catch (error) {
 			console.error(`❌ Error replacing text in block ${blockId}:`, error);
+			throw error;
+		}
+	}
+
+	/**
+	 * 设置文档分享权限
+	 * 使用 PATCH /open-apis/drive/v2/permissions/{token}/public API
+	 */
+	async setDocumentSharePermissions(documentToken: string, skipPermissionCheck: boolean = false): Promise<void> {
+		try {
+			// 确保token有效
+			const tokenValid = await this.ensureValidToken();
+			if (!tokenValid) {
+				throw new Error('Token无效，请重新授权');
+			}
+
+			// 检查当前权限设置，判断是否需要修改（除非明确跳过检查）
+			if (!skipPermissionCheck) {
+				try {
+					const currentPermissions = await this.getDocumentPermissions(documentToken);
+					const currentLinkShare = currentPermissions.link_share_entity;
+					const targetLinkShare = this.settings.linkSharePermission;
+
+					// 只在权限需要修改时继续
+					if (currentLinkShare === targetLinkShare) {
+						console.log(`✅ Document permissions already correct: ${currentLinkShare}`);
+						return;
+					}
+					console.log(`🔄 Document permissions need update: ${currentLinkShare} → ${targetLinkShare}`);
+				} catch (getError) {
+					console.warn('⚠️ Failed to get current permissions, proceeding with update:', getError);
+				}
+			} else {
+				console.log(`🔧 Setting document permissions (skipping check): ${this.settings.linkSharePermission}`);
+			}
+
+			// 构建权限设置请求数据
+			const requestData: any = {};
+
+			// 根据设置配置链接分享权限
+			if (this.settings.enableLinkShare) {
+				requestData.link_share_entity = this.settings.linkSharePermission;
+
+				// 根据分享范围设置外部访问权限
+				if (this.settings.linkSharePermission === 'anyone_readable' || this.settings.linkSharePermission === 'anyone_editable') {
+					// 互联网访问：必须设置为 open
+					requestData.external_access_entity = 'open';
+				} else {
+					// 组织内访问：可以设置为 open 或 close，这里设置为 open 以确保功能正常
+					requestData.external_access_entity = 'open';
+				}
+
+				// 设置谁可以查看、添加、移除协作者
+				requestData.share_entity = 'anyone'; // 任何有权限的人都可以查看协作者
+
+				// 设置协作者管理权限
+				requestData.manage_collaborator_entity = 'collaborator_can_view'; // 协作者可以查看其他协作者
+			}
+
+			console.log(`🔧 Setting document share permissions for ${documentToken}:`, requestData);
+
+			const response = await requestUrl({
+				url: `${FEISHU_CONFIG.BASE_URL}/drive/v2/permissions/${documentToken}/public?type=docx`,
+				method: 'PATCH',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify(requestData)
+			});
+
+			console.log(`📋 Set document permissions response status: ${response.status}`);
+
+			// 处理不同的响应格式
+			let data: any;
+			try {
+				data = response.json || JSON.parse(response.text);
+			} catch (parseError) {
+				console.error('❌ Failed to parse response:', response.text);
+				throw new Error(`API响应解析失败: ${response.status} - ${response.text}`);
+			}
+
+			console.log(`📋 Set document permissions response data:`, data);
+
+			if (data.code !== 0) {
+				console.error('❌ API returned error:', {
+					code: data.code,
+					msg: data.msg,
+					requestData: requestData,
+					documentToken: documentToken
+				});
+				throw new Error(`设置文档分享权限失败 (${data.code}): ${data.msg}`);
+			}
+
+			console.log(`✅ Successfully set document share permissions for ${documentToken}`);
+
+		} catch (error) {
+			console.error('Set document share permissions error:', error);
+			throw error;
+		}
+	}
+
+	/**
+	 * 获取文档当前权限设置
+	 * 使用 GET /open-apis/drive/v2/permissions/{token}/public API
+	 */
+	async getDocumentPermissions(documentToken: string): Promise<any> {
+		try {
+			// 确保token有效
+			const tokenValid = await this.ensureValidToken();
+			if (!tokenValid) {
+				throw new Error('Token无效，请重新授权');
+			}
+
+			const response = await requestUrl({
+				url: `${FEISHU_CONFIG.BASE_URL}/drive/v2/permissions/${documentToken}/public?type=docx`,
+				method: 'GET',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				}
+			});
+
+			const data = response.json || JSON.parse(response.text);
+
+			if (data.code !== 0) {
+				throw new Error(data.msg || '获取文档权限设置失败');
+			}
+
+			return data.data.permission_public;
+
+		} catch (error) {
+			console.error('Get document permissions error:', error);
+			throw error;
+		}
+	}
+
+	/**
+	 * 验证文档链接分享是否生效
+	 * 通过分析权限设置来判断链接分享的实际效果
+	 */
+	async verifyDocumentLinkSharing(documentToken: string): Promise<{
+		isLinkSharingEnabled: boolean;
+		shareScope: 'tenant' | 'internet' | 'none';
+		accessLevel: 'readable' | 'editable' | 'none';
+		explanation: string;
+	}> {
+		try {
+			const permissions = await this.getDocumentPermissions(documentToken);
+
+			console.log('🔍 Analyzing document permissions:', permissions);
+
+			// 分析链接分享设置
+			const linkShareEntity = permissions.link_share_entity;
+			const externalAccessEntity = permissions.external_access_entity;
+
+			let isLinkSharingEnabled = false;
+			let shareScope: 'tenant' | 'internet' | 'none' = 'none';
+			let accessLevel: 'readable' | 'editable' | 'none' = 'none';
+			let explanation = '';
+
+			if (linkShareEntity === 'close') {
+				explanation = '链接分享已关闭，只有协作者可以访问文档';
+			} else if (linkShareEntity === 'tenant_readable') {
+				isLinkSharingEnabled = true;
+				shareScope = 'tenant';
+				accessLevel = 'readable';
+				explanation = '组织内获得链接的人可以阅读文档';
+			} else if (linkShareEntity === 'tenant_editable') {
+				isLinkSharingEnabled = true;
+				shareScope = 'tenant';
+				accessLevel = 'editable';
+				explanation = '组织内获得链接的人可以编辑文档';
+			} else if (linkShareEntity === 'anyone_can_view' && externalAccessEntity === 'open') {
+				isLinkSharingEnabled = true;
+				shareScope = 'internet';
+				accessLevel = 'readable';
+				explanation = '互联网上获得链接的任何人都可以阅读文档';
+			} else if (linkShareEntity === 'anyone_can_edit' && externalAccessEntity === 'open') {
+				isLinkSharingEnabled = true;
+				shareScope = 'internet';
+				accessLevel = 'editable';
+				explanation = '互联网上获得链接的任何人都可以编辑文档';
+			} else {
+				explanation = `未知的链接分享设置: ${linkShareEntity}, external_access: ${externalAccessEntity}`;
+			}
+
+			const result = {
+				isLinkSharingEnabled,
+				shareScope,
+				accessLevel,
+				explanation
+			};
+
+			console.log('📊 Link sharing analysis result:', result);
+			return result;
+
+		} catch (error) {
+			console.error('Verify document link sharing error:', error);
 			throw error;
 		}
 	}

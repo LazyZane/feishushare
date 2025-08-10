@@ -38,6 +38,13 @@ export const DEFAULT_SETTINGS: Partial<FeishuSettings> = {
 	defaultFolderName: '我的空间',
 	titleSource: 'filename',
 	frontMatterHandling: 'remove',
+	// 新增：链接分享默认设置
+	enableLinkShare: true,
+	linkSharePermission: 'anyone_readable',
+	// 新增：内容处理默认设置
+	enableSubDocumentUpload: true,
+	enableLocalImageUpload: true,
+	enableLocalAttachmentUpload: true,
 };
 
 export const FEISHU_ERROR_MESSAGES: Record<number, string> = {

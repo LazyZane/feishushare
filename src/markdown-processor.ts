@@ -40,20 +40,31 @@ export class MarkdownProcessor {
 		return content.replace(/\[\[([^\]|]+)(\|([^\]]+))?\]\]/g, (match, link, _, display) => {
 			// 检查是否为文件引用（有文件扩展名）
 			if (this.isFileReference(link)) {
-				const placeholder = this.generatePlaceholder();
-				const fileInfo: LocalFileInfo = {
-					originalPath: link,
-					fileName: this.extractFileName(link),
-					placeholder: placeholder,
-					isImage: this.isImageFile(link),
-					altText: display || link
-				};
-				this.localFiles.push(fileInfo);
-				return placeholder;
+				// 根据设置决定是否处理文件
+				const isImage = this.isImageFile(link);
+				const shouldProcess = isImage
+					? (context?.enableLocalImageUpload !== false)
+					: (context?.enableLocalAttachmentUpload !== false);
+
+				if (shouldProcess) {
+					const placeholder = this.generatePlaceholder();
+					const fileInfo: LocalFileInfo = {
+						originalPath: link,
+						fileName: this.extractFileName(link),
+						placeholder: placeholder,
+						isImage: isImage,
+						altText: display || link
+					};
+					this.localFiles.push(fileInfo);
+					return placeholder;
+				} else {
+					// 如果设置禁用了文件上传，保持原始链接
+					return match; // 保持原有的 [[link|display]] 格式
+				}
 			} else {
 				// 检查是否为双链引用的markdown文件
 				const linkedFile = this.findLinkedMarkdownFile(link);
-				if (linkedFile && context) {
+				if (linkedFile && context && context.enableSubDocumentUpload !== false) {
 					// 检查是否已经处理过此文件（防止循环引用）
 					const normalizedPath = normalizePath(linkedFile.path);
 					if (context.processedFiles.has(normalizedPath)) {
@@ -113,26 +124,37 @@ export class MarkdownProcessor {
 	/**
 	 * 处理嵌入内容 ![[file]]
 	 */
-	private processEmbeds(content: string): string {
+	private processEmbeds(content: string, context?: ProcessContext): string {
 		// 匹配嵌入语法，生成占位符
 		return content.replace(/!\[\[([^\]]+)\]\]/g, (match, file) => {
-			const placeholder = this.generatePlaceholder();
-			const fileInfo: LocalFileInfo = {
-				originalPath: file,
-				fileName: this.extractFileName(file),
-				placeholder: placeholder,
-				isImage: this.isImageFile(file),
-				altText: file
-			};
-			this.localFiles.push(fileInfo);
-			return placeholder;
+			// 根据设置决定是否处理文件
+			const isImage = this.isImageFile(file);
+			const shouldProcess = isImage
+				? (context?.enableLocalImageUpload !== false)
+				: (context?.enableLocalAttachmentUpload !== false);
+
+			if (shouldProcess) {
+				const placeholder = this.generatePlaceholder();
+				const fileInfo: LocalFileInfo = {
+					originalPath: file,
+					fileName: this.extractFileName(file),
+					placeholder: placeholder,
+					isImage: isImage,
+					altText: file
+				};
+				this.localFiles.push(fileInfo);
+				return placeholder;
+			} else {
+				// 如果设置禁用了文件上传，保持原有格式
+				return match; // 保持原有的 ![[file]] 格式
+			}
 		});
 	}
 
 	/**
 	 * 处理图片链接
 	 */
-	private processImages(content: string): string {
+	private processImages(content: string, context?: ProcessContext): string {
 		// 处理本地图片路径，生成占位符
 		return content.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, src) => {
 			// 如果是网络图片，保持原样
@@ -140,18 +162,24 @@ export class MarkdownProcessor {
 				return match;
 			}
 
-			// 如果是本地图片，生成占位符
-			const placeholder = this.generatePlaceholder();
-			const altText = alt || '图片';
-			const fileInfo: LocalFileInfo = {
-				originalPath: src,
-				fileName: this.extractFileName(src),
-				placeholder: placeholder,
-				isImage: true,
-				altText: altText
-			};
-			this.localFiles.push(fileInfo);
-			return placeholder;
+			// 根据设置决定是否处理本地图片
+			if (context?.enableLocalImageUpload !== false) {
+				// 如果是本地图片，生成占位符
+				const placeholder = this.generatePlaceholder();
+				const altText = alt || '图片';
+				const fileInfo: LocalFileInfo = {
+					originalPath: src,
+					fileName: this.extractFileName(src),
+					placeholder: placeholder,
+					isImage: true,
+					altText: altText
+				};
+				this.localFiles.push(fileInfo);
+				return placeholder;
+			} else {
+				// 如果设置禁用了图片上传，保持原有格式
+				return match; // 保持原有的 ![alt](src) 格式
+			}
 		});
 	}
 
@@ -307,7 +335,10 @@ export class MarkdownProcessor {
 	processCompleteWithFiles(
 		content: string,
 		maxDepth: number = 3,
-		frontMatterHandling: 'remove' | 'keep-as-code' = 'remove'
+		frontMatterHandling: 'remove' | 'keep-as-code' = 'remove',
+		enableSubDocumentUpload: boolean = true,
+		enableLocalImageUpload: boolean = true,
+		enableLocalAttachmentUpload: boolean = true
 	): MarkdownProcessResult {
 		// 重置本地文件列表
 		this.localFiles = [];
@@ -319,7 +350,10 @@ export class MarkdownProcessor {
 		const context: ProcessContext = {
 			maxDepth: maxDepth,
 			currentDepth: 0,
-			processedFiles: new Set<string>()
+			processedFiles: new Set<string>(),
+			enableSubDocumentUpload,
+			enableLocalImageUpload,
+			enableLocalAttachmentUpload
 		};
 
 		const finalContent = this.processCompleteWithContext(processedContent, context);
@@ -491,8 +525,8 @@ export class MarkdownProcessor {
 		processedContent = this.processCallouts(processedContent); // 先处理 Callout，因为它们是块级元素
 		processedContent = this.processWikiLinks(processedContent, context);
 		processedContent = this.processBlockReferences(processedContent);
-		processedContent = this.processEmbeds(processedContent);
-		processedContent = this.processImages(processedContent);
+		processedContent = this.processEmbeds(processedContent, context);
+		processedContent = this.processImages(processedContent, context);
 		processedContent = this.processTags(processedContent);
 		processedContent = this.processHighlights(processedContent);
 		processedContent = this.processMathFormulas(processedContent);

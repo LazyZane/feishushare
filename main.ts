@@ -185,7 +185,10 @@ export default class FeishuPlugin extends Plugin {
 			const processResult = this.markdownProcessor.processCompleteWithFiles(
 				rawContent,
 				3, // maxDepth
-				this.settings.frontMatterHandling
+				this.settings.frontMatterHandling,
+				this.settings.enableSubDocumentUpload,
+				this.settings.enableLocalImageUpload,
+				this.settings.enableLocalAttachmentUpload
 			);
 
 			// 根据设置提取文档标题
@@ -239,11 +242,22 @@ export default class FeishuPlugin extends Plugin {
 			const message = `✅ 分享成功！文档：${result.title}`;
 			const notice = new Notice(message, 8000);
 
+			// 创建按钮容器，使用内联样式实现并排布局
+			const buttonContainer = notice.noticeEl.createEl('div');
+			buttonContainer.style.cssText = `
+				display: flex;
+				gap: 8px;
+				margin-top: 8px;
+			`;
+
 			// 添加复制链接功能
-			const copyButton = notice.noticeEl.createEl('button', {
+			const copyButton = buttonContainer.createEl('button', {
 				text: '📋 复制链接',
 				cls: 'mod-cta'
 			});
+			copyButton.style.cssText = `
+				flex: 1;
+			`;
 
 			copyButton.onclick = async () => {
 				try {
@@ -260,10 +274,13 @@ export default class FeishuPlugin extends Plugin {
 			};
 
 			// 添加打开链接功能
-			const openButton = notice.noticeEl.createEl('button', {
+			const openButton = buttonContainer.createEl('button', {
 				text: '🔗 打开',
 				cls: 'mod-muted'
 			});
+			openButton.style.cssText = `
+				flex: 1;
+			`;
 
 			openButton.onclick = () => {
 				if (result.url) {

@@ -12,6 +12,11 @@ export type TitleSource = 'filename' | 'frontmatter';
  */
 export type FrontMatterHandling = 'remove' | 'keep-as-code';
 
+/**
+ * 链接分享权限类型
+ */
+export type LinkSharePermission = 'tenant_readable' | 'tenant_editable' | 'anyone_readable' | 'anyone_editable';
+
 export interface FeishuSettings {
 	appId: string;
 	appSecret: string;
@@ -23,6 +28,13 @@ export interface FeishuSettings {
 	defaultFolderName: string;
 	titleSource: TitleSource;
 	frontMatterHandling: FrontMatterHandling;
+	// 新增：链接分享设置
+	enableLinkShare: boolean;
+	linkSharePermission: LinkSharePermission;
+	// 新增：内容处理设置
+	enableSubDocumentUpload: boolean;
+	enableLocalImageUpload: boolean;
+	enableLocalAttachmentUpload: boolean;
 }
 
 export interface FeishuUserInfo {
@@ -142,6 +154,10 @@ export interface ProcessContext {
 	currentDepth: number;
 	processedFiles: Set<string>; // 防止循环引用
 	parentDocumentId?: string;   // 父文档ID，用于建立关联
+	// 新增：内容处理设置
+	enableSubDocumentUpload?: boolean;
+	enableLocalImageUpload?: boolean;
+	enableLocalAttachmentUpload?: boolean;
 }
 
 /**
