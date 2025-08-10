@@ -1,0 +1,14 @@
+{
+  "name": "feishu-oauth-callback",
+  "version": "1.0.0",
+  "description": "飞书OAuth回调中转服务",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vercel dev",
+    "build": "echo 'No build needed'",
+    "start": "echo 'Static deployment'"
+  },
+  "keywords": ["feishu", "oauth", "obsidian"],
+  "author": "",
+  "license": "MIT"
+}

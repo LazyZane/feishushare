@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>飞书授权回调 - Obsidian</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .container {
+            text-align: center;
+            padding: 3rem 2rem;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            backdrop-filter: blur(15px);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            max-width: 500px;
+            width: 90%;
+        }
+        
+        .logo {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+        }
+        
+        .spinner {
+            width: 60px;
+            height: 60px;
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 2rem;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .message {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+        
+        .details {
+            font-size: 1rem;
+            opacity: 0.9;
+            line-height: 1.5;
+            margin-bottom: 2rem;
+        }
+        
+        .error {
+            color: #ff6b6b;
+        }
+        
+        .success {
+            color: #51cf66;
+        }
+        
+        .manual-section {
+            margin-top: 2rem;
+            padding-top: 2rem;
+            border-top: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .manual-link {
+            display: inline-block;
+            padding: 1rem 2rem;
+            background: rgba(255, 255, 255, 0.2);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 12px;
+            color: white;
+            text-decoration: none;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+        
+        .manual-link:hover {
+            background: rgba(255, 255, 255, 0.3);
+            border-color: rgba(255, 255, 255, 0.5);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+        
+        .debug-info {
+            margin-top: 2rem;
+            padding: 1rem;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.8rem;
+            text-align: left;
+            opacity: 0.7;
+            display: none;
+        }
+        
+        .show-debug {
+            margin-top: 1rem;
+            color: rgba(255, 255, 255, 0.6);
+            cursor: pointer;
+            font-size: 0.8rem;
+        }
+        
+        .show-debug:hover {
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">🚀</div>
+        <div class="spinner" id="spinner"></div>
+        <div class="message" id="message">正在处理飞书授权...</div>
+        <div class="details" id="details">请稍候，正在自动跳转到Obsidian</div>
+        
+        <div id="manual-section" class="manual-section" style="display: none;">
+            <div style="margin-bottom: 1rem; opacity: 0.8;">如果没有自动跳转，请点击下方按钮：</div>
+            <a href="#" class="manual-link" id="manual-link">📱 打开Obsidian</a>
+        </div>
+        
+        <div class="show-debug" onclick="toggleDebug()">显示调试信息</div>
+        <div class="debug-info" id="debug-info"></div>
+    </div>
+
+    <script>
+        // 获取URL参数
+        const urlParams = new URLSearchParams(window.location.search);
+        const code = urlParams.get('code');
+        const error = urlParams.get('error');
+        const errorDescription = urlParams.get('error_description');
+        const state = urlParams.get('state');
+        
+        const messageEl = document.getElementById('message');
+        const detailsEl = document.getElementById('details');
+        const spinnerEl = document.getElementById('spinner');
+        const manualSection = document.getElementById('manual-section');
+        const manualLink = document.getElementById('manual-link');
+        const debugInfo = document.getElementById('debug-info');
+
+        // 调试信息
+        const debugData = {
+            timestamp: new Date().toISOString(),
+            url: window.location.href,
+            userAgent: navigator.userAgent,
+            params: {
+                code: code ? code.substring(0, 10) + '...' : null,
+                error: error,
+                errorDescription: errorDescription,
+                state: state,
+                allParams: Object.fromEntries(urlParams)
+            }
+        };
+
+        function updateDebugInfo() {
+            debugInfo.textContent = JSON.stringify(debugData, null, 2);
+        }
+
+        function toggleDebug() {
+            const isVisible = debugInfo.style.display !== 'none';
+            debugInfo.style.display = isVisible ? 'none' : 'block';
+            if (!isVisible) updateDebugInfo();
+        }
+
+        function hideSpinner() {
+            spinnerEl.style.display = 'none';
+        }
+
+        function showError(message, details) {
+            hideSpinner();
+            messageEl.textContent = '❌ ' + message;
+            messageEl.className = 'message error';
+            detailsEl.textContent = details;
+            debugData.result = 'error';
+            debugData.errorMessage = message;
+        }
+
+        function showSuccess(message, details) {
+            hideSpinner();
+            messageEl.textContent = '✅ ' + message;
+            messageEl.className = 'message success';
+            detailsEl.textContent = details;
+            debugData.result = 'success';
+        }
+
+        function showManualOption(obsidianUrl) {
+            manualSection.style.display = 'block';
+            manualLink.href = obsidianUrl;
+            manualLink.onclick = function(e) {
+                e.preventDefault();
+                try {
+                    window.location.href = obsidianUrl;
+                    debugData.manualRedirect = true;
+                } catch (err) {
+                    console.error('Manual redirect failed:', err);
+                    alert('无法打开Obsidian，请确保Obsidian已安装并支持自定义协议');
+                }
+                return false;
+            };
+        }
+
+        // 主处理逻辑
+        console.log('飞书OAuth回调处理开始', debugData);
+
+        if (error) {
+            // 处理授权错误
+            showError('授权失败', errorDescription || error);
+            console.error('OAuth error:', error, errorDescription);
+            
+        } else if (code) {
+            // 构建Obsidian协议URL
+            const obsidianUrl = `obsidian://feishu-auth?${urlParams.toString()}`;
+            debugData.obsidianUrl = obsidianUrl;
+            
+            console.log('准备跳转到Obsidian:', obsidianUrl);
+            
+            // 尝试自动跳转
+            try {
+                // 立即尝试跳转
+                window.location.href = obsidianUrl;
+                
+                // 显示成功消息
+                showSuccess('授权成功！', '正在跳转到Obsidian...');
+                
+                // 2秒后显示手动选项（防止自动跳转失败）
+                setTimeout(() => {
+                    detailsEl.textContent = '如果Obsidian没有自动打开，请点击下方按钮';
+                    showManualOption(obsidianUrl);
+                }, 2000);
+                
+                debugData.autoRedirect = true;
+                
+            } catch (e) {
+                console.error('自动跳转失败:', e);
+                showError('自动跳转失败', '请手动点击下方链接打开Obsidian');
+                showManualOption(obsidianUrl);
+                debugData.autoRedirectError = e.message;
+            }
+            
+        } else {
+            // 缺少必要参数
+            showError('无效的回调', '缺少授权码或存在其他参数错误');
+            console.error('Invalid callback - missing code parameter');
+        }
+
+        // 页面加载完成后的额外处理
+        window.addEventListener('load', function() {
+            console.log('页面加载完成');
+            updateDebugInfo();
+        });
+
+        // 监听页面可见性变化（用户切换回来时）
+        document.addEventListener('visibilitychange', function() {
+            if (!document.hidden && code) {
+                console.log('用户返回页面，可能Obsidian跳转失败');
+                // 如果用户返回页面，说明可能跳转失败，显示手动选项
+                setTimeout(() => {
+                    if (manualSection.style.display === 'none') {
+                        detailsEl.textContent = '检测到您返回了页面，请手动点击下方按钮打开Obsidian';
+                        showManualOption(`obsidian://feishu-auth?${urlParams.toString()}`);
+                    }
+                }, 1000);
+            }
+        });
+    </script>
+</body>
+</html>
