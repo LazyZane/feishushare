@@ -156,10 +156,13 @@ export interface ProcessContext {
 	currentDepth: number;
 	processedFiles: Set<string>; // 防止循环引用
 	parentDocumentId?: string;   // 父文档ID，用于建立关联
-	// 新增：内容处理设置
+	// 内容处理设置
 	enableSubDocumentUpload?: boolean;
 	enableLocalImageUpload?: boolean;
 	enableLocalAttachmentUpload?: boolean;
+	// Front Matter 处理设置
+	frontMatterHandling?: 'remove' | 'keep-as-code';
+	titleSource?: 'filename' | 'frontmatter';
 }
 
 /**

@@ -358,7 +358,8 @@ export class MarkdownProcessor {
 		frontMatterHandling: 'remove' | 'keep-as-code' = 'remove',
 		enableSubDocumentUpload: boolean = true,
 		enableLocalImageUpload: boolean = true,
-		enableLocalAttachmentUpload: boolean = true
+		enableLocalAttachmentUpload: boolean = true,
+		titleSource: 'filename' | 'frontmatter' = 'filename'
 	): MarkdownProcessResult {
 		// 重置本地文件列表
 		this.localFiles = [];
@@ -373,7 +374,9 @@ export class MarkdownProcessor {
 			processedFiles: new Set<string>(),
 			enableSubDocumentUpload,
 			enableLocalImageUpload,
-			enableLocalAttachmentUpload
+			enableLocalAttachmentUpload,
+			frontMatterHandling,
+			titleSource
 		};
 
 		const finalContent = this.processCompleteWithContext(processedContent, context);
@@ -490,7 +493,12 @@ export class MarkdownProcessor {
 	/**
 	 * 处理子文档内容（带递归控制）
 	 */
-	async processSubDocument(file: TFile, context: ProcessContext): Promise<MarkdownProcessResult> {
+	async processSubDocument(
+		file: TFile,
+		context: ProcessContext,
+		frontMatterHandling: 'remove' | 'keep-as-code' = 'remove',
+		titleSource: 'filename' | 'frontmatter' = 'filename'
+	): Promise<MarkdownProcessResult> {
 		try {
 			// 添加到已处理文件集合
 			const normalizedPath = normalizePath(file.path);
@@ -498,6 +506,12 @@ export class MarkdownProcessor {
 
 			// 读取文件内容
 			const content = await this.app.vault.read(file);
+
+			// 处理 Front Matter（与主文档保持一致）
+			const { content: processedContent, frontMatter } = this.processFrontMatter(content, frontMatterHandling);
+
+			// 提取标题（与主文档保持一致）
+			const extractedTitle = this.extractTitle(file.basename, frontMatter, titleSource);
 
 			// 创建子上下文
 			const subContext: ProcessContext = {
@@ -510,7 +524,7 @@ export class MarkdownProcessor {
 			this.localFiles = [];
 
 			// 处理子文档内容
-			const processedContent = this.processCompleteWithContext(content, subContext);
+			const finalContent = this.processCompleteWithContext(processedContent, subContext);
 
 			// 获取子文档的文件列表
 			const subDocumentFiles = [...this.localFiles];
@@ -519,10 +533,10 @@ export class MarkdownProcessor {
 			this.localFiles = originalFiles;
 
 			return {
-				content: processedContent,
+				content: finalContent,
 				localFiles: subDocumentFiles,
-				frontMatter: null,
-				extractedTitle: null
+				frontMatter: frontMatter,
+				extractedTitle: extractedTitle
 			};
 		} catch (error) {
 			Debug.error(`Error processing sub-document ${file.path}:`, error);

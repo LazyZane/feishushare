@@ -189,7 +189,8 @@ export default class FeishuPlugin extends Plugin {
 				this.settings.frontMatterHandling,
 				this.settings.enableSubDocumentUpload,
 				this.settings.enableLocalImageUpload,
-				this.settings.enableLocalAttachmentUpload
+				this.settings.enableLocalAttachmentUpload,
+				this.settings.titleSource
 			);
 
 			// 根据设置提取文档标题

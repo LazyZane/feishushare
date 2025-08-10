@@ -2,12 +2,9 @@ import { Notice, requestUrl, App, TFile, normalizePath } from 'obsidian';
 import {
 	FeishuSettings,
 	FeishuOAuthResponse,
-	FeishuApiError,
 	ShareResult,
 	FeishuUserInfo,
 	FeishuFileUploadResponse,
-	FeishuDocCreateResponse,
-	FeishuFolderListResponse,
 	LocalFileInfo,
 	MarkdownProcessResult,
 	FeishuDocBlocksResponse,
@@ -2011,11 +2008,41 @@ export class FeishuApiService {
 					continue;
 				}
 
+				// 处理子文档内容（与主文档保持一致的 Front Matter 处理）
+				const processResult = this.markdownProcessor.processCompleteWithFiles(
+					subDocContent,
+					3, // maxDepth
+					this.settings.frontMatterHandling,
+					false, // 子文档中禁用子文档上传，避免无限递归
+					this.settings.enableLocalImageUpload,
+					this.settings.enableLocalAttachmentUpload,
+					this.settings.titleSource
+				);
+
+				// 根据设置提取子文档标题
+				const subDocTitle = this.markdownProcessor.extractTitle(
+					subDoc.fileName.replace('.md', ''),
+					processResult.frontMatter,
+					this.settings.titleSource
+				);
+
 				// 上传子文档到飞书
-				const subDocResult = await this.uploadSubDocument(subDoc.fileName, subDocContent, statusNotice);
+				const subDocResult = await this.uploadSubDocument(subDocTitle, processResult.content, statusNotice);
 				if (!subDocResult.success) {
 					Debug.warn(`⚠️ Failed to upload sub-document: ${subDoc.fileName}, error: ${subDocResult.error}`);
 					continue;
+				}
+
+				// 处理子文档内部的本地文件（图片、附件等）
+				if (processResult.localFiles.length > 0) {
+					try {
+						Debug.log(`📎 Processing ${processResult.localFiles.length} local files in sub-document: ${subDoc.fileName}`);
+						await this.processFileUploads(subDocResult.documentToken!, processResult.localFiles, statusNotice);
+						Debug.log(`✅ Successfully processed local files in sub-document: ${subDoc.fileName}`);
+					} catch (fileError) {
+						Debug.warn(`⚠️ Failed to process local files in sub-document ${subDoc.fileName}:`, fileError);
+						// 文件处理失败不影响子文档上传成功
+					}
 				}
 
 				// 在父文档中插入子文档链接
@@ -2203,11 +2230,9 @@ export class FeishuApiService {
 
 			const placeholderBlock = placeholderBlocks[0];
 
-			// 创建链接文本
-			const linkText = `📄 [${subDocResult.title}](${subDocResult.url})`;
-
-			// 替换占位符为链接
-			await this.replaceTextInBlock(parentDocumentId, placeholderBlock.blockId, linkText);
+			// 替换占位符为超链接（去掉前后下划线，因为飞书会自动去除）
+			const cleanPlaceholder = subDocInfo.placeholder.replace(/^__/, '').replace(/__$/, '');
+			await this.replaceTextWithLink(parentDocumentId, placeholderBlock.blockId, subDocResult.title!, subDocResult.url!, cleanPlaceholder);
 
 			Debug.log(`✅ Successfully inserted sub-document link: ${subDocInfo.fileName}`);
 
@@ -2217,23 +2242,123 @@ export class FeishuApiService {
 	}
 
 	/**
-	 * 替换文档块中的文本
+	 * 获取文档块的内容
 	 */
-	private async replaceTextInBlock(documentId: string, blockId: string, newText: string): Promise<void> {
+	private async getBlockContent(documentId: string, blockId: string): Promise<{ elements: any[] } | null> {
 		try {
-			const requestData = {
-				update_text_elements: {
-					elements: [
-						{
+			const response = await requestUrl({
+				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${blockId}`,
+				method: 'GET',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				}
+			});
+
+			const data = response.json || JSON.parse(response.text);
+			if (data.code !== 0) {
+				Debug.error(`❌ Failed to get block content: ${data.msg}`);
+				return null;
+			}
+
+			// 返回文本元素数组
+			return {
+				elements: data.data?.block?.text?.elements || []
+			};
+
+		} catch (error) {
+			Debug.error(`❌ Error getting block content for ${blockId}:`, error);
+			return null;
+		}
+	}
+
+	/**
+	 * 构建包含链接的文本元素数组（保留上下文）
+	 */
+	private buildTextElementsWithLink(originalElements: any[], linkText: string, linkUrl: string, targetPlaceholder: string): any[] {
+		const encodedUrl = encodeURIComponent(linkUrl);
+		const newElements: any[] = [];
+
+		// 遍历原始元素，查找并替换占位符
+		for (const element of originalElements) {
+			if (element.text_run && element.text_run.content) {
+				const content = element.text_run.content;
+
+				// 检查是否包含目标占位符
+				const placeholderIndex = content.indexOf(targetPlaceholder);
+
+				if (placeholderIndex !== -1) {
+					// 找到目标占位符，分割文本
+					const beforePlaceholder = content.substring(0, placeholderIndex);
+					const afterPlaceholder = content.substring(placeholderIndex + targetPlaceholder.length);
+
+					// 添加占位符前的文本
+					if (beforePlaceholder.length > 0) {
+						newElements.push({
 							text_run: {
-								content: newText
+								content: beforePlaceholder,
+								text_element_style: element.text_run.text_element_style
+							}
+						});
+					}
+
+					// 添加链接元素
+					newElements.push({
+						text_run: {
+							content: linkText,
+							text_element_style: {
+								...element.text_run.text_element_style,
+								link: {
+									url: encodedUrl
+								}
 							}
 						}
-					]
+					});
+
+					// 添加占位符后的文本
+					if (afterPlaceholder.length > 0) {
+						newElements.push({
+							text_run: {
+								content: afterPlaceholder,
+								text_element_style: element.text_run.text_element_style
+							}
+						});
+					}
+				} else {
+					// 没有占位符，保持原样
+					newElements.push(element);
+				}
+			} else {
+				// 非文本元素，保持原样
+				newElements.push(element);
+			}
+		}
+
+		return newElements;
+	}
+
+	/**
+	 * 替换文档块中的占位符为超链接（保留上下文）
+	 */
+	private async replaceTextWithLink(documentId: string, blockId: string, linkText: string, linkUrl: string, placeholder: string): Promise<void> {
+		try {
+			// 第一步：获取当前块的内容
+			const blockInfo = await this.getBlockContent(documentId, blockId);
+			if (!blockInfo) {
+				throw new Error('无法获取块内容');
+			}
+
+			// 第二步：查找占位符并构建新的文本元素数组
+			const newElements = this.buildTextElementsWithLink(blockInfo.elements, linkText, linkUrl, placeholder);
+
+			// 第三步：更新块内容
+			const requestData = {
+				update_text_elements: {
+					elements: newElements
 				}
 			};
 
-			Debug.log(`🔧 Replacing text in block ${blockId} with: "${newText}"`);
+			Debug.log(`🔗 Replacing placeholder in block ${blockId} with link: "${linkText}" -> "${linkUrl}"`);
 
 			const response = await requestUrl({
 				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${blockId}`,
@@ -2246,19 +2371,19 @@ export class FeishuApiService {
 			});
 
 			const data = response.json || JSON.parse(response.text);
-			Debug.log(`📋 Replace text response:`, data);
-
 			if (data.code !== 0) {
-				throw new Error(data.msg || '替换文本失败');
+				throw new Error(data.msg || '替换文本为链接失败');
 			}
 
-			Debug.log(`✅ Successfully replaced text in block: ${blockId}`);
+			Debug.log(`✅ Successfully replaced placeholder with link in block ${blockId}`);
 
 		} catch (error) {
-			Debug.error(`❌ Error replacing text in block ${blockId}:`, error);
+			Debug.error(`❌ Error replacing placeholder with link in block ${blockId}:`, error);
 			throw error;
 		}
 	}
+
+
 
 	/**
 	 * 设置文档分享权限
