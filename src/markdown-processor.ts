@@ -1,5 +1,6 @@
 import { App, TFile, normalizePath } from 'obsidian';
 import { LocalFileInfo, MarkdownProcessResult, ProcessContext, FrontMatterData } from './types';
+import { Debug } from './debug';
 import { CALLOUT_TYPE_MAPPING } from './constants';
 
 /**
@@ -68,14 +69,14 @@ export class MarkdownProcessor {
 					// 检查是否已经处理过此文件（防止循环引用）
 					const normalizedPath = normalizePath(linkedFile.path);
 					if (context.processedFiles.has(normalizedPath)) {
-						console.warn(`⚠️ Circular reference detected for file: ${normalizedPath}`);
+						Debug.warn(`⚠️ Circular reference detected for file: ${normalizedPath}`);
 						const displayText = display || link;
 						return `📝 ${displayText} (循环引用)`;
 					}
 
 					// 检查递归深度
 					if (context.currentDepth >= context.maxDepth) {
-						console.warn(`⚠️ Max depth reached for file: ${normalizedPath}`);
+						Debug.warn(`⚠️ Max depth reached for file: ${normalizedPath}`);
 						const displayText = display || link;
 						return `📝 ${displayText} (深度限制)`;
 					}
@@ -455,14 +456,14 @@ export class MarkdownProcessor {
 			}
 
 			if (file) {
-				console.log(`✅ Found linked markdown file: "${linkText}" -> "${file.path}"`);
+				Debug.log(`✅ Found linked markdown file: "${linkText}" -> "${file.path}"`);
 			} else {
-				console.log(`❌ Linked markdown file not found: "${linkText}"`);
+				Debug.log(`❌ Linked markdown file not found: "${linkText}"`);
 			}
 
 			return file;
 		} catch (error) {
-			console.error(`Error finding linked file for "${linkText}":`, error);
+			Debug.error(`Error finding linked file for "${linkText}":`, error);
 			return null;
 		}
 	}
@@ -505,7 +506,7 @@ export class MarkdownProcessor {
 				extractedTitle: null
 			};
 		} catch (error) {
-			console.error(`Error processing sub-document ${file.path}:`, error);
+			Debug.error(`Error processing sub-document ${file.path}:`, error);
 			return {
 				content: `❌ 无法读取子文档: ${file.basename}`,
 				localFiles: [],
@@ -572,7 +573,7 @@ export class MarkdownProcessor {
 			const frontMatter = this.parseSimpleYaml(yamlContent);
 			return { frontMatter, content: remainingContent };
 		} catch (error) {
-			console.warn('Failed to parse Front Matter:', error);
+			Debug.warn('Failed to parse Front Matter:', error);
 			return { frontMatter: null, content };
 		}
 	}

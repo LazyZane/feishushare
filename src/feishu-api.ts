@@ -16,6 +16,7 @@ import {
 	SubDocumentResult
 } from './types';
 import { FEISHU_CONFIG, FEISHU_ERROR_MESSAGES } from './constants';
+import { Debug } from './debug';
 
 /**
  * 飞书 API 服务类 - 直接实现版本
@@ -76,19 +77,19 @@ export class FeishuApiService {
 			const error = url.searchParams.get('error');
 
 			if (error) {
-				console.error('OAuth error:', error);
+				Debug.error('OAuth error:', error);
 				return false;
 			}
 
 			if (!code) {
-				console.error('No authorization code in callback');
+				Debug.error('No authorization code in callback');
 				return false;
 			}
 
 			// 验证state（如果需要）
 			const savedState = localStorage.getItem('feishu-oauth-state');
 			if (savedState && state !== savedState) {
-				console.error('State mismatch');
+				Debug.error('State mismatch');
 				return false;
 			}
 
@@ -96,7 +97,7 @@ export class FeishuApiService {
 			return await this.handleOAuthCallback(code);
 
 		} catch (error) {
-			console.error('Process callback error:', error);
+			Debug.error('Process callback error:', error);
 			return false;
 		}
 	}
@@ -129,7 +130,7 @@ export class FeishuApiService {
 			}
 
 		} catch (error) {
-			console.error('OAuth callback error:', error);
+			Debug.error('OAuth callback error:', error);
 			new Notice(`❌ 授权失败: ${error.message}`);
 			return false;
 		}
@@ -155,7 +156,7 @@ export class FeishuApiService {
 
 			const appTokenData = appTokenResponse.json || JSON.parse(appTokenResponse.text);
 			if (appTokenData.code !== 0) {
-				console.error('Failed to get app access token:', appTokenData);
+				Debug.error('Failed to get app access token:', appTokenData);
 				return { success: false, error: `获取应用令牌失败: ${appTokenData.msg}` };
 			}
 
@@ -188,7 +189,7 @@ export class FeishuApiService {
 				data = JSON.parse(responseText);
 			} else {
 				// 尝试调用json()方法
-				console.log('Trying to call response.json()...');
+				Debug.log('Trying to call response.json()...');
 				data = await response.json();
 			}
 
@@ -197,12 +198,12 @@ export class FeishuApiService {
 				this.settings.refreshToken = data.data.refresh_token;
 				return { success: true };
 			} else {
-				console.error('Token exchange failed:', data);
+				Debug.error('Token exchange failed:', data);
 				return { success: false, error: data.msg };
 			}
 
 		} catch (error) {
-			console.error('Token exchange error:', error);
+			Debug.error('Token exchange error:', error);
 			return { success: false, error: error.message };
 		}
 	}
@@ -231,12 +232,12 @@ export class FeishuApiService {
 					user_id: data.data.user_id
 				};
 			} else {
-				console.error('Get user info failed:', data);
+				Debug.error('Get user info failed:', data);
 				return null;
 			}
 
 		} catch (error) {
-			console.error('Get user info error:', error);
+			Debug.error('Get user info error:', error);
 			return null;
 		}
 	}
@@ -283,7 +284,7 @@ export class FeishuApiService {
 				const importResult = await this.createImportTaskWithCorrectFolder(uploadResult.fileToken, cleanTitle);
 				if (importResult.success && importResult.ticket) {
 					// 第三步：等待导入完成（15秒超时）
-					console.log('Step 3: Waiting for import completion (15s timeout)...');
+					Debug.log('Step 3: Waiting for import completion (15s timeout)...');
 					const finalResult = await this.waitForImportCompletionWithTimeout(importResult.ticket, 15000);
 					if (finalResult.success && finalResult.documentToken) {
 						const docUrl = `https://feishu.cn/docx/${finalResult.documentToken}`;
@@ -301,9 +302,9 @@ export class FeishuApiService {
 
 									// 新创建的文档，跳过权限检查直接设置
 									await this.setDocumentSharePermissions(finalResult.documentToken!, true);
-									console.log('✅ Document share permissions set successfully');
+									Debug.log('✅ Document share permissions set successfully');
 								} catch (permissionError) {
-									console.warn('⚠️ Failed to set document share permissions:', permissionError);
+									Debug.warn('⚠️ Failed to set document share permissions:', permissionError);
 									// 权限设置失败不影响主流程
 								}
 							})();
@@ -338,7 +339,7 @@ export class FeishuApiService {
 									await this.processFileUploads(finalResult.documentToken, regularFiles, statusNotice);
 								}
 							} catch (fileError) {
-								console.warn('⚠️ File upload processing failed:', fileError);
+								Debug.warn('⚠️ File upload processing failed:', fileError);
 								// 文件上传失败不影响主流程，继续返回文档链接
 							}
 						}
@@ -347,7 +348,7 @@ export class FeishuApiService {
 						try {
 							await this.deleteSourceFile(uploadResult.fileToken);
 						} catch (deleteError) {
-							console.warn('⚠️ Failed to delete source file:', deleteError.message);
+							Debug.warn('⚠️ Failed to delete source file:', deleteError.message);
 							// 不影响主流程，继续返回成功结果
 						}
 
@@ -357,8 +358,8 @@ export class FeishuApiService {
 							url: docUrl
 						};
 					} else {
-						console.warn('⚠️ Import task failed or timed out, falling back to file URL');
-						console.warn('Final result details:', finalResult);
+						Debug.warn('⚠️ Import task failed or timed out, falling back to file URL');
+						Debug.warn('Final result details:', finalResult);
 						return {
 							success: true,
 							title: title,
@@ -366,8 +367,8 @@ export class FeishuApiService {
 						};
 					}
 				} else {
-					console.warn('⚠️ Failed to create import task, falling back to file URL');
-					console.warn('Import result details:', importResult);
+					Debug.warn('⚠️ Failed to create import task, falling back to file URL');
+					Debug.warn('Import result details:', importResult);
 					return {
 						success: true,
 						title: title,
@@ -375,8 +376,8 @@ export class FeishuApiService {
 					};
 				}
 			} catch (importError) {
-				console.warn('⚠️ Import process failed, falling back to file URL:', importError.message);
-				console.error('Import error details:', importError);
+				Debug.warn('⚠️ Import process failed, falling back to file URL:', importError.message);
+				Debug.error('Import error details:', importError);
 				return {
 					success: true,
 					title: title,
@@ -385,7 +386,7 @@ export class FeishuApiService {
 			}
 
 		} catch (error) {
-			console.error('Share markdown error:', error);
+			Debug.error('Share markdown error:', error);
 			return {
 				success: false,
 				error: error.message
@@ -439,7 +440,7 @@ export class FeishuApiService {
 				const importResult = await this.createImportTaskWithCorrectFolder(uploadResult.fileToken, cleanTitle);
 				if (importResult.success && importResult.ticket) {
 					// 第三步：等待导入完成（15秒超时）
-					console.log('Step 3: Waiting for import completion (15s timeout)...');
+					Debug.log('Step 3: Waiting for import completion (15s timeout)...');
 					const finalResult = await this.waitForImportCompletionWithTimeout(importResult.ticket, 15000);
 					if (finalResult.success && finalResult.documentToken) {
 						const docUrl = `https://feishu.cn/docx/${finalResult.documentToken}`;
@@ -457,9 +458,9 @@ export class FeishuApiService {
 
 									// 新创建的文档，跳过权限检查直接设置
 									await this.setDocumentSharePermissions(finalResult.documentToken!, true);
-									console.log('✅ Document share permissions set successfully');
+									Debug.log('✅ Document share permissions set successfully');
 								} catch (permissionError) {
-									console.warn('⚠️ Failed to set document share permissions:', permissionError);
+									Debug.warn('⚠️ Failed to set document share permissions:', permissionError);
 									// 权限设置失败不影响主流程
 								}
 							})();
@@ -471,7 +472,7 @@ export class FeishuApiService {
 							try {
 								await this.deleteSourceFile(uploadResult.fileToken!);
 							} catch (deleteError) {
-								console.warn('⚠️ Failed to delete source file:', deleteError);
+								Debug.warn('⚠️ Failed to delete source file:', deleteError);
 								// 不影响主流程，继续返回成功结果
 							}
 						})();
@@ -488,8 +489,8 @@ export class FeishuApiService {
 							url: docUrl
 						};
 					} else {
-						console.warn('⚠️ Import task failed or timed out, falling back to file URL');
-						console.warn('Final result details:', finalResult);
+						Debug.warn('⚠️ Import task failed or timed out, falling back to file URL');
+						Debug.warn('Final result details:', finalResult);
 						return {
 							success: true,
 							title: title,
@@ -497,8 +498,8 @@ export class FeishuApiService {
 						};
 					}
 				} else {
-					console.warn('⚠️ Failed to create import task, falling back to file URL');
-					console.warn('Import result details:', importResult);
+					Debug.warn('⚠️ Failed to create import task, falling back to file URL');
+					Debug.warn('Import result details:', importResult);
 					return {
 						success: true,
 						title: title,
@@ -506,8 +507,8 @@ export class FeishuApiService {
 					};
 				}
 			} catch (importError) {
-				console.warn('⚠️ Import process failed, falling back to file URL:', importError.message);
-				console.error('Import error details:', importError);
+				Debug.warn('⚠️ Import process failed, falling back to file URL:', importError.message);
+				Debug.error('Import error details:', importError);
 				return {
 					success: true,
 					title: title,
@@ -516,7 +517,7 @@ export class FeishuApiService {
 			}
 
 		} catch (error) {
-			console.error('Share markdown error:', error);
+			Debug.error('Share markdown error:', error);
 			return {
 				success: false,
 				error: error.message
@@ -573,7 +574,7 @@ export class FeishuApiService {
 			}
 
 		} catch (error) {
-			console.error('Get folder list error:', error);
+			Debug.error('Get folder list error:', error);
 			throw error;
 		}
 	}
@@ -676,7 +677,7 @@ export class FeishuApiService {
 				};
 			} else {
 				const errorMsg = FEISHU_ERROR_MESSAGES[data.code] || data.msg || '上传失败';
-				console.error('Upload failed:', data);
+				Debug.error('Upload failed:', data);
 				return {
 					success: false,
 					error: errorMsg
@@ -684,7 +685,7 @@ export class FeishuApiService {
 			}
 
 		} catch (error) {
-			console.error('Upload file error:', error);
+			Debug.error('Upload file error:', error);
 			return {
 				success: false,
 				error: error.message
@@ -720,12 +721,12 @@ export class FeishuApiService {
 				this.settings.refreshToken = data.data.refresh_token;
 				return true;
 			} else {
-				console.error('Token refresh failed:', data);
+				Debug.error('Token refresh failed:', data);
 				return false;
 			}
 
 		} catch (error) {
-			console.error('Token refresh error:', error);
+			Debug.error('Token refresh error:', error);
 			return false;
 		}
 	}
@@ -768,7 +769,7 @@ export class FeishuApiService {
 			}
 
 		} catch (error) {
-			console.error('Token validation error:', error);
+			Debug.error('Token validation error:', error);
 			return false;
 		}
 	}
@@ -817,7 +818,7 @@ export class FeishuApiService {
 			}
 
 		} catch (error) {
-			console.error('Token验证出错:', error);
+			Debug.error('Token验证出错:', error);
 			const reauthSuccess = await this.triggerReauth('Token验证出错', statusNotice);
 			if (reauthSuccess) {
 				return true;
@@ -881,7 +882,7 @@ export class FeishuApiService {
 			return await this.waitForReauth(statusNotice);
 
 		} catch (error) {
-			console.error('重新授权失败:', error);
+			Debug.error('重新授权失败:', error);
 			new Notice(`❌ 重新授权失败: ${error.message}`);
 			return false;
 		}
@@ -970,7 +971,7 @@ export class FeishuApiService {
 			}
 
 		} catch (error) {
-			console.error('Create import task error:', error);
+			Debug.error('Create import task error:', error);
 			return {
 				success: false,
 				error: error.message
@@ -990,7 +991,7 @@ export class FeishuApiService {
 
 			// 检查是否超时
 			if (elapsedTime >= timeoutMs) {
-				console.warn(`Import timeout after ${elapsedTime}ms`);
+				Debug.warn(`Import timeout after ${elapsedTime}ms`);
 				return {
 					success: false,
 					error: `导入任务超时 (${timeoutMs}ms)`
@@ -1007,24 +1008,24 @@ export class FeishuApiService {
 							documentToken: result.documentToken
 						};
 					} else {
-						console.warn('Import completed but no document token returned, continuing to wait...');
+						Debug.warn('Import completed but no document token returned, continuing to wait...');
 					}
 				} else if (result.success && result.status === 2) {
 					// 导入显示失败，但检查是否有document token
-					console.log(`🔍 Status 2 detected. Document token: ${result.documentToken || 'none'}`);
+					Debug.log(`🔍 Status 2 detected. Document token: ${result.documentToken || 'none'}`);
 					if (result.documentToken) {
-						console.log(`✅ Import completed despite failure status, got document token: ${result.documentToken}`);
+						Debug.log(`✅ Import completed despite failure status, got document token: ${result.documentToken}`);
 						return {
 							success: true,
 							documentToken: result.documentToken
 						};
 					} else {
-						console.warn(`⚠️ Import shows failure status (${result.status}), no document token yet. Attempt ${attempt}/8, continuing to wait...`);
+						Debug.warn(`⚠️ Import shows failure status (${result.status}), no document token yet. Attempt ${attempt}/8, continuing to wait...`);
 						if (attempt <= 8) { // 前8次尝试时，即使显示失败也继续等待
 							// 继续等待
 						} else {
 							// 8次后才真正认为失败
-							console.error('❌ Import failed after extended waiting');
+							Debug.error('❌ Import failed after extended waiting');
 							return {
 								success: false,
 								error: '导入任务失败'
@@ -1032,7 +1033,7 @@ export class FeishuApiService {
 						}
 					}
 				} else {
-					console.log(`📊 Other status: ${result.status}, success: ${result.success}`);
+					Debug.log(`📊 Other status: ${result.status}, success: ${result.success}`);
 					}
 
 				// 渐进式延迟
@@ -1042,7 +1043,7 @@ export class FeishuApiService {
 				}
 
 			} catch (error) {
-				console.error('Check import status error:', error);
+				Debug.error('Check import status error:', error);
 				// 继续尝试
 				const delay = this.getDelayForAttempt(attempt);
 				await new Promise(resolve => setTimeout(resolve, delay));
@@ -1097,7 +1098,7 @@ export class FeishuApiService {
 					documentToken: result.token
 				};
 			} else {
-				console.error('❌ Import status check failed:', data);
+				Debug.error('❌ Import status check failed:', data);
 				return {
 					success: false,
 					error: data.msg || '检查导入状态失败'
@@ -1105,7 +1106,7 @@ export class FeishuApiService {
 			}
 
 		} catch (error) {
-			console.error('Check import status error:', error);
+			Debug.error('Check import status error:', error);
 			return {
 				success: false,
 				error: error.message
@@ -1131,7 +1132,7 @@ export class FeishuApiService {
 					body: JSON.stringify({})
 				});
 			} catch (trashError) {
-				console.warn('⚠️ Trash method failed, trying direct delete...');
+				Debug.warn('⚠️ Trash method failed, trying direct delete...');
 				// 方法2：尝试直接删除
 				response = await requestUrl({
 					url: `${FEISHU_CONFIG.BASE_URL}/drive/v1/files/${fileToken}?type=file`,
@@ -1150,14 +1151,14 @@ export class FeishuApiService {
 			const data = response.json || JSON.parse(response.text);
 
 			if (data.code !== 0) {
-				console.warn('⚠️ Delete API returned non-zero code:', data.code, data.msg);
+				Debug.warn('⚠️ Delete API returned non-zero code:', data.code, data.msg);
 				// 不抛出错误，因为文件可能已经被删除或移动
-				console.log('📝 Source file deletion completed (may have been moved to trash)');
+				Debug.log('📝 Source file deletion completed (may have been moved to trash)');
 			} else {
 				}
 
 		} catch (error) {
-			console.error('❌ Delete source file error:', error);
+			Debug.error('❌ Delete source file error:', error);
 			// 不抛出错误，避免影响整个分享流程
 			}
 	}
@@ -1175,7 +1176,7 @@ export class FeishuApiService {
 			const placeholderPatterns = this.compilePlaceholderPatterns(localFiles);
 			const remainingPlaceholders = new Set(localFiles.map(f => f.placeholder));
 
-			console.log(`🔍 Searching for ${remainingPlaceholders.size} placeholders in document...`);
+			Debug.log(`🔍 Searching for ${remainingPlaceholders.size} placeholders in document...`);
 
 			while (hasMore && remainingPlaceholders.size > 0) { // 方案1：早期退出
 				// 构建查询参数
@@ -1212,7 +1213,7 @@ export class FeishuApiService {
 
 				// 方案1：早期退出 - 所有占位符都找到了就停止
 				if (remainingPlaceholders.size === 0) {
-					console.log(`✅ All ${localFiles.length} placeholders found, stopping search early`);
+					Debug.log(`✅ All ${localFiles.length} placeholders found, stopping search early`);
 					break;
 				}
 
@@ -1220,11 +1221,11 @@ export class FeishuApiService {
 				pageToken = data.data.page_token;
 			}
 
-			console.log(`🎯 Found ${placeholderBlocks.length}/${localFiles.length} placeholder blocks`);
+			Debug.log(`🎯 Found ${placeholderBlocks.length}/${localFiles.length} placeholder blocks`);
 			return placeholderBlocks;
 
 		} catch (error) {
-			console.error('Find placeholder blocks error:', error);
+			Debug.error('Find placeholder blocks error:', error);
 			throw error;
 		}
 	}
@@ -1290,7 +1291,7 @@ export class FeishuApiService {
 				const isMatch = patternInfo.patterns.some(pattern => pattern.test(blockContent));
 
 				if (isMatch) {
-					console.log(`✅ Found placeholder: "${placeholder}" in block ${block.block_id}`);
+					Debug.log(`✅ Found placeholder: "${placeholder}" in block ${block.block_id}`);
 
 					foundBlocks.push({
 						blockId: block.block_id,
@@ -1382,13 +1383,13 @@ export class FeishuApiService {
 				if (createdBlock.children && createdBlock.children.length > 0) {
 					targetBlockId = createdBlock.children[0];
 				} else {
-					console.warn('⚠️ View Block created but no child File Block found');
+					Debug.warn('⚠️ View Block created but no child File Block found');
 				}
 			}
 			return targetBlockId;
 
 		} catch (error) {
-			console.error('Insert file block error:', error);
+			Debug.error('Insert file block error:', error);
 			throw error;
 		}
 	}
@@ -1476,7 +1477,7 @@ export class FeishuApiService {
 			const data: FeishuFileUploadResponse = response.json || JSON.parse(response.text);
 
 			if (data.code === 0) {
-				console.log(`✅ Uploaded ${fileInfo.isImage ? 'image' : 'file'} material: ${data.data.file_token}`);
+				Debug.log(`✅ Uploaded ${fileInfo.isImage ? 'image' : 'file'} material: ${data.data.file_token}`);
 				return data.data.file_token;
 			} else {
 				const errorMsg = FEISHU_ERROR_MESSAGES[data.code] || data.msg || '上传文件素材失败';
@@ -1484,7 +1485,7 @@ export class FeishuApiService {
 			}
 
 		} catch (error) {
-			console.error('Upload file to document error:', error);
+			Debug.error('Upload file to document error:', error);
 			throw error;
 		}
 	}
@@ -1498,7 +1499,7 @@ export class FeishuApiService {
 				{ replace_image: { token: fileToken } } :
 				{ replace_file: { token: fileToken } };
 
-			console.log(`🔧 Setting ${isImage ? 'image' : 'file'} block content:`, {
+			Debug.log(`🔧 Setting ${isImage ? 'image' : 'file'} block content:`, {
 				documentId,
 				blockId,
 				fileToken,
@@ -1515,25 +1516,25 @@ export class FeishuApiService {
 				body: JSON.stringify(requestData)
 			});
 
-			console.log(`📋 Set block content response status: ${response.status}`);
+			Debug.log(`📋 Set block content response status: ${response.status}`);
 			const data = response.json || JSON.parse(response.text);
-			console.log(`📋 Set block content response:`, data);
+			Debug.log(`📋 Set block content response:`, data);
 
 			if (data.code !== 0) {
 				throw new Error(data.msg || '设置文件块内容失败');
 			}
 
-			console.log(`✅ Set ${isImage ? 'image' : 'file'} block content: ${blockId}`);
+			Debug.log(`✅ Set ${isImage ? 'image' : 'file'} block content: ${blockId}`);
 
 		} catch (error) {
-			console.error('Set file block content error:', error);
+			Debug.error('Set file block content error:', error);
 			// 添加更详细的错误信息
 			if (error.message && error.message.includes('400')) {
-				console.error('❌ 400 Error details: This might be due to:');
-				console.error('  1. Invalid file token or block ID');
-				console.error('  2. File type not supported for this block type');
-				console.error('  3. Block already has content');
-				console.error('  4. API parameter format issue');
+				Debug.error('❌ 400 Error details: This might be due to:');
+				Debug.error('  1. Invalid file token or block ID');
+				Debug.error('  2. File type not supported for this block type');
+				Debug.error('  3. Block already has content');
+				Debug.error('  4. API parameter format issue');
 			}
 			throw error;
 		}
@@ -1546,7 +1547,7 @@ export class FeishuApiService {
 	 */
 	private async findRemainingPlaceholders(documentId: string, placeholderBlocks: PlaceholderBlock[]): Promise<PlaceholderBlock[]> {
 		try {
-			console.log(`🔍 Checking ${placeholderBlocks.length} placeholders for remaining content...`);
+			Debug.log(`🔍 Checking ${placeholderBlocks.length} placeholders for remaining content...`);
 			const remainingPlaceholders: PlaceholderBlock[] = [];
 			const checkedBlocks = new Set<string>(); // 防止重复检查
 
@@ -1569,7 +1570,7 @@ export class FeishuApiService {
 				const data: FeishuDocBlocksResponse = response.json || JSON.parse(response.text);
 
 				if (data.code !== 0) {
-					console.warn('Failed to get document blocks for placeholder check:', data.msg);
+					Debug.warn('Failed to get document blocks for placeholder check:', data.msg);
 					break;
 				}
 
@@ -1578,7 +1579,7 @@ export class FeishuApiService {
 				pageToken = data.data.page_token;
 			}
 
-			console.log(`📋 Retrieved ${allBlocks.length} blocks from document`);
+			Debug.log(`📋 Retrieved ${allBlocks.length} blocks from document`);
 
 			// 检查每个占位符是否仍然存在
 			for (const placeholderBlock of placeholderBlocks) {
@@ -1590,7 +1591,7 @@ export class FeishuApiService {
 				const block = allBlocks.find(item => item.block_id === placeholderBlock.blockId);
 				if (block && block.text) {
 					const blockContent = this.extractBlockTextContent(block);
-					console.log(`🔍 Checking block ${placeholderBlock.blockId}: "${blockContent.substring(0, 100)}..."`);
+					Debug.log(`🔍 Checking block ${placeholderBlock.blockId}: "${blockContent.substring(0, 100)}..."`);
 
 					// 检查是否仍包含占位符文本（考虑多种格式）
 					const originalPlaceholder = placeholderBlock.placeholder; // __FEISHU_FILE_xxx__
@@ -1603,23 +1604,23 @@ export class FeishuApiService {
 
 					if (hasOriginal || hasFeishu || hasClean) {
 						const foundFormat = hasOriginal ? 'original' : hasFeishu ? 'feishu' : 'clean';
-						console.log(`✅ Found remaining placeholder: ${originalPlaceholder} (format: ${foundFormat})`);
+						Debug.log(`✅ Found remaining placeholder: ${originalPlaceholder} (format: ${foundFormat})`);
 						remainingPlaceholders.push(placeholderBlock);
 					} else {
-						console.log(`❌ Placeholder already cleaned: ${originalPlaceholder}`);
+						Debug.log(`❌ Placeholder already cleaned: ${originalPlaceholder}`);
 					}
 				} else {
-					console.log(`⚠️ Block not found or has no text: ${placeholderBlock.blockId}`);
+					Debug.log(`⚠️ Block not found or has no text: ${placeholderBlock.blockId}`);
 				}
 			}
 
-			console.log(`🎯 Found ${remainingPlaceholders.length} remaining placeholders out of ${placeholderBlocks.length}`);
+			Debug.log(`🎯 Found ${remainingPlaceholders.length} remaining placeholders out of ${placeholderBlocks.length}`);
 			return remainingPlaceholders;
 
 		} catch (error) {
-			console.error('Error finding remaining placeholders:', error);
+			Debug.error('Error finding remaining placeholders:', error);
 			// 如果检查失败，返回所有占位符（保守处理）
-			console.log('🔄 Falling back to processing all placeholders due to error');
+			Debug.log('🔄 Falling back to processing all placeholders due to error');
 			return placeholderBlocks;
 		}
 	}
@@ -1633,7 +1634,7 @@ export class FeishuApiService {
 		}
 
 		try {
-			console.log(`🔧 Batch replacing ${placeholderBlocks.length} placeholder texts...`);
+			Debug.log(`🔧 Batch replacing ${placeholderBlocks.length} placeholder texts...`);
 
 			// 构建批量更新请求
 			const requests = placeholderBlocks.map(placeholderBlock => ({
@@ -1664,18 +1665,18 @@ export class FeishuApiService {
 			});
 
 			const data = response.json || JSON.parse(response.text);
-			console.log(`📋 Batch replace placeholder response:`, data);
+			Debug.log(`📋 Batch replace placeholder response:`, data);
 
 			if (data.code !== 0) {
-				console.warn(`⚠️ Batch replace failed: ${data.msg}, falling back to individual replacement...`);
+				Debug.warn(`⚠️ Batch replace failed: ${data.msg}, falling back to individual replacement...`);
 				// 如果批量替换失败，回退到逐个替换
 				await this.fallbackIndividualReplace(documentId, placeholderBlocks);
 			} else {
-				console.log(`✅ Successfully batch replaced ${placeholderBlocks.length} placeholder texts`);
+				Debug.log(`✅ Successfully batch replaced ${placeholderBlocks.length} placeholder texts`);
 			}
 
 		} catch (error) {
-			console.error('Batch replace placeholder text error:', error);
+			Debug.error('Batch replace placeholder text error:', error);
 			// 如果批量替换失败，回退到逐个替换
 			await this.fallbackIndividualReplace(documentId, placeholderBlocks);
 		}
@@ -1685,13 +1686,13 @@ export class FeishuApiService {
 	 * 回退到逐个替换占位符文本
 	 */
 	private async fallbackIndividualReplace(documentId: string, placeholderBlocks: PlaceholderBlock[]): Promise<void> {
-		console.log(`🔄 Falling back to individual replacement for ${placeholderBlocks.length} blocks...`);
+		Debug.log(`🔄 Falling back to individual replacement for ${placeholderBlocks.length} blocks...`);
 
 		for (const placeholderBlock of placeholderBlocks) {
 			try {
 				await this.replacePlaceholderText(documentId, placeholderBlock);
 			} catch (error) {
-				console.error(`❌ Failed to replace placeholder ${placeholderBlock.blockId}:`, error);
+				Debug.error(`❌ Failed to replace placeholder ${placeholderBlock.blockId}:`, error);
 			}
 		}
 	}
@@ -1714,7 +1715,7 @@ export class FeishuApiService {
 				}
 			};
 
-			console.log(`🔧 Replacing placeholder text in block: ${placeholderBlock.blockId}`);
+			Debug.log(`🔧 Replacing placeholder text in block: ${placeholderBlock.blockId}`);
 
 			const response = await requestUrl({
 				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${placeholderBlock.blockId}`,
@@ -1727,23 +1728,23 @@ export class FeishuApiService {
 			});
 
 			const data = response.json || JSON.parse(response.text);
-			console.log(`📋 Replace placeholder response:`, data);
+			Debug.log(`📋 Replace placeholder response:`, data);
 
 			if (data.code !== 0) {
-				console.warn(`⚠️ Failed to replace placeholder text: ${data.msg}, trying delete method...`);
+				Debug.warn(`⚠️ Failed to replace placeholder text: ${data.msg}, trying delete method...`);
 				// 如果替换失败，尝试删除方法
 				await this.deletePlaceholderBlock(documentId, placeholderBlock);
 			} else {
-				console.log(`✅ Replaced placeholder text in block: ${placeholderBlock.blockId}`);
+				Debug.log(`✅ Replaced placeholder text in block: ${placeholderBlock.blockId}`);
 			}
 
 		} catch (error) {
-			console.error('Replace placeholder text error:', error);
+			Debug.error('Replace placeholder text error:', error);
 			// 如果替换失败，尝试删除方法
 			try {
 				await this.deletePlaceholderBlock(documentId, placeholderBlock);
 			} catch (deleteError) {
-				console.error('Both replace and delete failed:', deleteError);
+				Debug.error('Both replace and delete failed:', deleteError);
 			}
 		}
 	}
@@ -1774,10 +1775,10 @@ export class FeishuApiService {
 				throw new Error(data.msg || '删除占位符块失败');
 			}
 
-			console.log(`✅ Deleted placeholder block: ${placeholderBlock.blockId}`);
+			Debug.log(`✅ Deleted placeholder block: ${placeholderBlock.blockId}`);
 
 		} catch (error) {
-			console.error('Delete placeholder block error:', error);
+			Debug.error('Delete placeholder block error:', error);
 			throw error;
 		}
 	}
@@ -1796,7 +1797,7 @@ export class FeishuApiService {
 			// 规范化路径
 			const normalizedPath = normalizePath(cleanPath);
 
-			console.log(`🔍 Trying to read file: "${filePath}" -> "${normalizedPath}"`);
+			Debug.log(`🔍 Trying to read file: "${filePath}" -> "${normalizedPath}"`);
 
 			// 获取文件对象
 			let file = this.app.vault.getFileByPath(normalizedPath);
@@ -1810,29 +1811,29 @@ export class FeishuApiService {
 					const foundFile = allFiles.find(f => f.name.toLowerCase() === fileName);
 					if (foundFile) {
 						file = foundFile;
-						console.log(`✅ Found file by name: ${file.path}`);
+						Debug.log(`✅ Found file by name: ${file.path}`);
 					}
 				}
 			}
 
 			if (!file) {
-				console.warn(`❌ File not found: ${normalizedPath}`);
+				Debug.warn(`❌ File not found: ${normalizedPath}`);
 				// 列出可能的文件供调试
 				const allFiles = this.app.vault.getFiles();
 				const similarFiles = allFiles.filter(f => f.name.includes(normalizedPath.split('/').pop() || ''));
 				if (similarFiles.length > 0) {
-					console.log('📋 Similar files found:', similarFiles.map(f => f.path));
+					Debug.log('📋 Similar files found:', similarFiles.map(f => f.path));
 				}
 				return null;
 			}
 
 			// 读取二进制内容
 			const content = await this.app.vault.readBinary(file);
-			console.log(`✅ Successfully read file: ${file.path} (${content.byteLength} bytes)`);
+			Debug.log(`✅ Successfully read file: ${file.path} (${content.byteLength} bytes)`);
 			return content;
 
 		} catch (error) {
-			console.error(`❌ Error reading local file ${filePath}:`, error);
+			Debug.error(`❌ Error reading local file ${filePath}:`, error);
 			return null;
 		}
 	}
@@ -1842,7 +1843,7 @@ export class FeishuApiService {
 	 */
 	async processFileUploads(documentId: string, localFiles: LocalFileInfo[], statusNotice?: Notice): Promise<void> {
 		if (localFiles.length === 0) {
-			console.log('📝 No local files to process');
+			Debug.log('📝 No local files to process');
 			return;
 		}
 
@@ -1855,15 +1856,15 @@ export class FeishuApiService {
 			const placeholderBlocks = await this.findPlaceholderBlocks(documentId, localFiles);
 
 			if (placeholderBlocks.length === 0) {
-				console.warn('⚠️ No placeholder blocks found in document');
+				Debug.warn('⚠️ No placeholder blocks found in document');
 				return;
 			}
 
-			console.log(`🎯 Found ${placeholderBlocks.length} placeholder blocks to process`);
+			Debug.log(`🎯 Found ${placeholderBlocks.length} placeholder blocks to process`);
 
 			// 按照原始文件顺序排序占位符块
 			const sortedPlaceholderBlocks = this.sortPlaceholdersByOriginalOrder(placeholderBlocks, localFiles);
-			console.log(`📋 Sorted placeholder blocks by original order`);
+			Debug.log(`📋 Sorted placeholder blocks by original order`);
 
 			// 第二步：并行读取所有文件内容（优化：并发读取）
 			if (statusNotice) {
@@ -1875,14 +1876,14 @@ export class FeishuApiService {
 					const fileContent = await this.readLocalFile(placeholderBlock.fileInfo.originalPath);
 					return { placeholderBlock, fileContent, success: !!fileContent };
 				} catch (error) {
-					console.warn(`⚠️ Failed to read file: ${placeholderBlock.fileInfo.originalPath}`, error);
+					Debug.warn(`⚠️ Failed to read file: ${placeholderBlock.fileInfo.originalPath}`, error);
 					return { placeholderBlock, fileContent: null, success: false };
 				}
 			});
 
 			const fileReadResults = await Promise.all(fileReadPromises);
 			const validFiles = fileReadResults.filter(result => result.success);
-			console.log(`� Successfully read ${validFiles.length}/${sortedPlaceholderBlocks.length} files`);
+			Debug.log(`� Successfully read ${validFiles.length}/${sortedPlaceholderBlocks.length} files`);
 
 			// 第三步：按顺序处理文件上传（必须串行，因为API限制）
 			const processedBlocks: PlaceholderBlock[] = [];
@@ -1900,7 +1901,7 @@ export class FeishuApiService {
 						...placeholderBlock,
 						index: placeholderBlock.index + i
 					};
-					console.log(`📍 Adjusted insert position for ${fileInfo.fileName}: ${placeholderBlock.index} -> ${adjustedPlaceholderBlock.index}`);
+					Debug.log(`📍 Adjusted insert position for ${fileInfo.fileName}: ${placeholderBlock.index} -> ${adjustedPlaceholderBlock.index}`);
 
 					// 创建文件块并上传文件
 					const newBlockId = await this.insertFileBlock(documentId, adjustedPlaceholderBlock);
@@ -1908,10 +1909,10 @@ export class FeishuApiService {
 					await this.setFileBlockContent(documentId, newBlockId, fileToken, fileInfo.isImage);
 
 					processedBlocks.push(placeholderBlock);
-					console.log(`✅ Successfully processed file: ${fileInfo.fileName}`);
+					Debug.log(`✅ Successfully processed file: ${fileInfo.fileName}`);
 
 				} catch (fileError) {
-					console.error(`❌ Failed to process file ${fileInfo.fileName}:`, fileError);
+					Debug.error(`❌ Failed to process file ${fileInfo.fileName}:`, fileError);
 					// 继续处理其他文件，不中断整个流程
 				}
 			}
@@ -1926,17 +1927,17 @@ export class FeishuApiService {
 				const remainingPlaceholders = await this.findRemainingPlaceholders(documentId, processedBlocks);
 
 				if (remainingPlaceholders.length > 0) {
-					console.log(`🔄 Found ${remainingPlaceholders.length} remaining placeholders to clean up`);
+					Debug.log(`🔄 Found ${remainingPlaceholders.length} remaining placeholders to clean up`);
 					await this.batchReplacePlaceholderText(documentId, remainingPlaceholders);
 				} else {
-					console.log(`✅ All placeholders have already been cleaned up`);
+					Debug.log(`✅ All placeholders have already been cleaned up`);
 				}
 			}
 
-			console.log(`🎉 File upload processing completed: ${processedBlocks.length} files processed`);
+			Debug.log(`🎉 File upload processing completed: ${processedBlocks.length} files processed`);
 
 		} catch (error) {
-			console.error('Process file uploads error:', error);
+			Debug.error('Process file uploads error:', error);
 			throw error;
 		}
 	}
@@ -1945,14 +1946,14 @@ export class FeishuApiService {
 	 * 按照原始文件顺序排序占位符块
 	 */
 	private sortPlaceholdersByOriginalOrder(placeholderBlocks: PlaceholderBlock[], localFiles: LocalFileInfo[]): PlaceholderBlock[] {
-		console.log('📋 Original localFiles order:');
+		Debug.log('📋 Original localFiles order:');
 		localFiles.forEach((file, index) => {
-			console.log(`  ${index}: ${file.fileName} -> ${file.placeholder}`);
+			Debug.log(`  ${index}: ${file.fileName} -> ${file.placeholder}`);
 		});
 
-		console.log('📋 Found placeholder blocks:');
+		Debug.log('📋 Found placeholder blocks:');
 		placeholderBlocks.forEach((block, index) => {
-			console.log(`  ${index}: ${block.fileInfo.fileName} -> ${block.placeholder} (index: ${block.index})`);
+			Debug.log(`  ${index}: ${block.fileInfo.fileName} -> ${block.placeholder} (index: ${block.index})`);
 		});
 
 		// 创建文件顺序映射（基于localFiles数组的顺序）
@@ -1965,7 +1966,7 @@ export class FeishuApiService {
 		const sorted = placeholderBlocks.sort((a, b) => {
 			const orderA = fileOrderMap.get(a.placeholder) ?? 999;
 			const orderB = fileOrderMap.get(b.placeholder) ?? 999;
-			console.log(`🔄 Comparing: ${a.fileInfo.fileName}(order:${orderA}, index:${a.index}) vs ${b.fileInfo.fileName}(order:${orderB}, index:${b.index})`);
+			Debug.log(`🔄 Comparing: ${a.fileInfo.fileName}(order:${orderA}, index:${a.index}) vs ${b.fileInfo.fileName}(order:${orderB}, index:${b.index})`);
 
 			// 如果localFiles顺序不同，使用localFiles顺序
 			if (orderA !== orderB) {
@@ -1976,9 +1977,9 @@ export class FeishuApiService {
 			return a.index - b.index;
 		});
 
-		console.log('📋 Sorted placeholder blocks:');
+		Debug.log('📋 Sorted placeholder blocks:');
 		sorted.forEach((block, index) => {
-			console.log(`  ${index}: ${block.fileInfo.fileName} -> ${block.placeholder}`);
+			Debug.log(`  ${index}: ${block.fileInfo.fileName} -> ${block.placeholder}`);
 		});
 
 		return sorted;
@@ -1988,7 +1989,7 @@ export class FeishuApiService {
 	 * 处理子文档上传
 	 */
 	private async processSubDocuments(parentDocumentId: string, subDocuments: LocalFileInfo[], statusNotice?: Notice): Promise<void> {
-		console.log(`🚀 Starting sub-document processing for ${subDocuments.length} documents`);
+		Debug.log(`🚀 Starting sub-document processing for ${subDocuments.length} documents`);
 
 		for (let i = 0; i < subDocuments.length; i++) {
 			const subDoc = subDocuments[i];
@@ -1998,34 +1999,34 @@ export class FeishuApiService {
 					statusNotice.setMessage(`📄 正在处理子文档 ${i + 1}/${subDocuments.length}: ${subDoc.fileName}...`);
 				}
 
-				console.log(`📄 Processing sub-document: ${subDoc.fileName} (${subDoc.originalPath})`);
+				Debug.log(`📄 Processing sub-document: ${subDoc.fileName} (${subDoc.originalPath})`);
 
 				// 读取子文档内容
 				const subDocContent = await this.readSubDocumentContent(subDoc.originalPath);
 				if (!subDocContent) {
-					console.warn(`⚠️ Could not read sub-document: ${subDoc.originalPath}, skipping...`);
+					Debug.warn(`⚠️ Could not read sub-document: ${subDoc.originalPath}, skipping...`);
 					continue;
 				}
 
 				// 上传子文档到飞书
 				const subDocResult = await this.uploadSubDocument(subDoc.fileName, subDocContent, statusNotice);
 				if (!subDocResult.success) {
-					console.warn(`⚠️ Failed to upload sub-document: ${subDoc.fileName}, error: ${subDocResult.error}`);
+					Debug.warn(`⚠️ Failed to upload sub-document: ${subDoc.fileName}, error: ${subDocResult.error}`);
 					continue;
 				}
 
 				// 在父文档中插入子文档链接
 				await this.insertSubDocumentLink(parentDocumentId, subDoc, subDocResult);
 
-				console.log(`✅ Successfully processed sub-document: ${subDoc.fileName}`);
+				Debug.log(`✅ Successfully processed sub-document: ${subDoc.fileName}`);
 
 			} catch (error) {
-				console.error(`❌ Error processing sub-document ${subDoc.fileName}:`, error);
+				Debug.error(`❌ Error processing sub-document ${subDoc.fileName}:`, error);
 				// 继续处理下一个子文档
 			}
 		}
 
-		console.log(`✅ Completed sub-document processing`);
+		Debug.log(`✅ Completed sub-document processing`);
 	}
 
 	/**
@@ -2037,7 +2038,7 @@ export class FeishuApiService {
 			let cleanPath = filePath.trim();
 			const normalizedPath = normalizePath(cleanPath);
 
-			console.log(`🔍 Reading sub-document: "${filePath}" -> "${normalizedPath}"`);
+			Debug.log(`🔍 Reading sub-document: "${filePath}" -> "${normalizedPath}"`);
 
 			// 获取文件对象
 			let file = this.app.vault.getFileByPath(normalizedPath);
@@ -2051,23 +2052,23 @@ export class FeishuApiService {
 					const foundFile = allFiles.find(f => f.name.toLowerCase() === fileName);
 					if (foundFile) {
 						file = foundFile;
-						console.log(`✅ Found sub-document by name: ${file.path}`);
+						Debug.log(`✅ Found sub-document by name: ${file.path}`);
 					}
 				}
 			}
 
 			if (!file) {
-				console.warn(`❌ Sub-document not found: ${normalizedPath}`);
+				Debug.warn(`❌ Sub-document not found: ${normalizedPath}`);
 				return null;
 			}
 
 			// 读取文本内容
 			const content = await this.app.vault.read(file);
-			console.log(`✅ Successfully read sub-document: ${file.path} (${content.length} characters)`);
+			Debug.log(`✅ Successfully read sub-document: ${file.path} (${content.length} characters)`);
 			return content;
 
 		} catch (error) {
-			console.error(`❌ Error reading sub-document ${filePath}:`, error);
+			Debug.error(`❌ Error reading sub-document ${filePath}:`, error);
 			return null;
 		}
 	}
@@ -2077,7 +2078,7 @@ export class FeishuApiService {
 	 */
 	private async uploadSubDocument(title: string, content: string, statusNotice?: Notice): Promise<SubDocumentResult> {
 		try {
-			console.log(`📤 Uploading sub-document: ${title}`);
+			Debug.log(`📤 Uploading sub-document: ${title}`);
 
 			// 使用现有的上传方法
 			const uploadResult = await this.uploadMarkdownFile(title, content);
@@ -2115,12 +2116,12 @@ export class FeishuApiService {
 							if (statusNotice) {
 								statusNotice.setMessage(`🔗 正在设置子文档权限: ${cleanTitle}...`);
 							}
-							console.log(`🔗 Setting permissions for sub-document: ${cleanTitle}`);
+							Debug.log(`🔗 Setting permissions for sub-document: ${cleanTitle}`);
 							// 新创建的子文档，跳过权限检查直接设置
 							await this.setDocumentSharePermissions(finalResult.documentToken!, true);
-							console.log(`✅ Sub-document permissions set successfully: ${cleanTitle}`);
+							Debug.log(`✅ Sub-document permissions set successfully: ${cleanTitle}`);
 						} catch (permissionError) {
-							console.warn(`⚠️ Failed to set sub-document permissions for ${cleanTitle}:`, permissionError);
+							Debug.warn(`⚠️ Failed to set sub-document permissions for ${cleanTitle}:`, permissionError);
 							// 权限设置失败不影响主流程
 						}
 					})();
@@ -2132,7 +2133,7 @@ export class FeishuApiService {
 					try {
 						await this.deleteSourceFile(uploadResult.fileToken!);
 					} catch (deleteError) {
-						console.warn('⚠️ Failed to delete sub-document source file:', deleteError);
+						Debug.warn('⚠️ Failed to delete sub-document source file:', deleteError);
 					}
 				})();
 				parallelTasks.push(deleteTask);
@@ -2154,7 +2155,7 @@ export class FeishuApiService {
 			}
 
 		} catch (error) {
-			console.error('Upload sub-document error:', error);
+			Debug.error('Upload sub-document error:', error);
 			return {
 				success: false,
 				error: error.message
@@ -2167,13 +2168,13 @@ export class FeishuApiService {
 	 */
 	private async insertSubDocumentLink(parentDocumentId: string, subDocInfo: LocalFileInfo, subDocResult: SubDocumentResult): Promise<void> {
 		try {
-			console.log(`🔗 Inserting sub-document link for: ${subDocInfo.fileName}`);
+			Debug.log(`🔗 Inserting sub-document link for: ${subDocInfo.fileName}`);
 
 			// 查找占位符位置
 			const placeholderBlocks = await this.findPlaceholderBlocks(parentDocumentId, [subDocInfo]);
 
 			if (placeholderBlocks.length === 0) {
-				console.warn(`⚠️ No placeholder found for sub-document: ${subDocInfo.fileName}`);
+				Debug.warn(`⚠️ No placeholder found for sub-document: ${subDocInfo.fileName}`);
 				return;
 			}
 
@@ -2185,10 +2186,10 @@ export class FeishuApiService {
 			// 替换占位符为链接
 			await this.replaceTextInBlock(parentDocumentId, placeholderBlock.blockId, linkText);
 
-			console.log(`✅ Successfully inserted sub-document link: ${subDocInfo.fileName}`);
+			Debug.log(`✅ Successfully inserted sub-document link: ${subDocInfo.fileName}`);
 
 		} catch (error) {
-			console.error(`❌ Error inserting sub-document link for ${subDocInfo.fileName}:`, error);
+			Debug.error(`❌ Error inserting sub-document link for ${subDocInfo.fileName}:`, error);
 		}
 	}
 
@@ -2209,7 +2210,7 @@ export class FeishuApiService {
 				}
 			};
 
-			console.log(`🔧 Replacing text in block ${blockId} with: "${newText}"`);
+			Debug.log(`🔧 Replacing text in block ${blockId} with: "${newText}"`);
 
 			const response = await requestUrl({
 				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${blockId}`,
@@ -2222,16 +2223,16 @@ export class FeishuApiService {
 			});
 
 			const data = response.json || JSON.parse(response.text);
-			console.log(`📋 Replace text response:`, data);
+			Debug.log(`📋 Replace text response:`, data);
 
 			if (data.code !== 0) {
 				throw new Error(data.msg || '替换文本失败');
 			}
 
-			console.log(`✅ Successfully replaced text in block: ${blockId}`);
+			Debug.log(`✅ Successfully replaced text in block: ${blockId}`);
 
 		} catch (error) {
-			console.error(`❌ Error replacing text in block ${blockId}:`, error);
+			Debug.error(`❌ Error replacing text in block ${blockId}:`, error);
 			throw error;
 		}
 	}
@@ -2257,15 +2258,15 @@ export class FeishuApiService {
 
 					// 只在权限需要修改时继续
 					if (currentLinkShare === targetLinkShare) {
-						console.log(`✅ Document permissions already correct: ${currentLinkShare}`);
+						Debug.log(`✅ Document permissions already correct: ${currentLinkShare}`);
 						return;
 					}
-					console.log(`🔄 Document permissions need update: ${currentLinkShare} → ${targetLinkShare}`);
+					Debug.log(`🔄 Document permissions need update: ${currentLinkShare} → ${targetLinkShare}`);
 				} catch (getError) {
-					console.warn('⚠️ Failed to get current permissions, proceeding with update:', getError);
+					Debug.warn('⚠️ Failed to get current permissions, proceeding with update:', getError);
 				}
 			} else {
-				console.log(`🔧 Setting document permissions (skipping check): ${this.settings.linkSharePermission}`);
+				Debug.log(`🔧 Setting document permissions (skipping check): ${this.settings.linkSharePermission}`);
 			}
 
 			// 构建权限设置请求数据
@@ -2291,7 +2292,7 @@ export class FeishuApiService {
 				requestData.manage_collaborator_entity = 'collaborator_can_view'; // 协作者可以查看其他协作者
 			}
 
-			console.log(`🔧 Setting document share permissions for ${documentToken}:`, requestData);
+			Debug.log(`🔧 Setting document share permissions for ${documentToken}:`, requestData);
 
 			const response = await requestUrl({
 				url: `${FEISHU_CONFIG.BASE_URL}/drive/v2/permissions/${documentToken}/public?type=docx`,
@@ -2303,21 +2304,21 @@ export class FeishuApiService {
 				body: JSON.stringify(requestData)
 			});
 
-			console.log(`📋 Set document permissions response status: ${response.status}`);
+			Debug.log(`📋 Set document permissions response status: ${response.status}`);
 
 			// 处理不同的响应格式
 			let data: any;
 			try {
 				data = response.json || JSON.parse(response.text);
 			} catch (parseError) {
-				console.error('❌ Failed to parse response:', response.text);
+				Debug.error('❌ Failed to parse response:', response.text);
 				throw new Error(`API响应解析失败: ${response.status} - ${response.text}`);
 			}
 
-			console.log(`📋 Set document permissions response data:`, data);
+			Debug.log(`📋 Set document permissions response data:`, data);
 
 			if (data.code !== 0) {
-				console.error('❌ API returned error:', {
+				Debug.error('❌ API returned error:', {
 					code: data.code,
 					msg: data.msg,
 					requestData: requestData,
@@ -2326,10 +2327,10 @@ export class FeishuApiService {
 				throw new Error(`设置文档分享权限失败 (${data.code}): ${data.msg}`);
 			}
 
-			console.log(`✅ Successfully set document share permissions for ${documentToken}`);
+			Debug.log(`✅ Successfully set document share permissions for ${documentToken}`);
 
 		} catch (error) {
-			console.error('Set document share permissions error:', error);
+			Debug.error('Set document share permissions error:', error);
 			throw error;
 		}
 	}
@@ -2364,7 +2365,7 @@ export class FeishuApiService {
 			return data.data.permission_public;
 
 		} catch (error) {
-			console.error('Get document permissions error:', error);
+			Debug.error('Get document permissions error:', error);
 			throw error;
 		}
 	}
@@ -2382,7 +2383,7 @@ export class FeishuApiService {
 		try {
 			const permissions = await this.getDocumentPermissions(documentToken);
 
-			console.log('🔍 Analyzing document permissions:', permissions);
+			Debug.log('🔍 Analyzing document permissions:', permissions);
 
 			// 分析链接分享设置
 			const linkShareEntity = permissions.link_share_entity;
@@ -2426,11 +2427,11 @@ export class FeishuApiService {
 				explanation
 			};
 
-			console.log('📊 Link sharing analysis result:', result);
+			Debug.log('📊 Link sharing analysis result:', result);
 			return result;
 
 		} catch (error) {
-			console.error('Verify document link sharing error:', error);
+			Debug.error('Verify document link sharing error:', error);
 			throw error;
 		}
 	}

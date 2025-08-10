@@ -1,6 +1,6 @@
-// 调试工具类 - 生产环境下禁用日志输出
+// 调试工具类 - 生产环境下禁用所有日志输出
 export class Debug {
-    private static enabled = false; // 生产环境设为false
+    private static enabled = false; // 生产环境设为false，可通过设置启用
 
     static log(...args: any[]) {
         if (this.enabled) {
@@ -15,8 +15,10 @@ export class Debug {
     }
 
     static error(...args: any[]) {
-        // 错误信息始终输出，但添加前缀
-        console.error('[Feishu]', ...args);
+        // 生产环境下也禁用错误日志，避免污染控制台
+        if (this.enabled) {
+            console.error('[Feishu]', ...args);
+        }
     }
 
     static enable() {
@@ -25,5 +27,9 @@ export class Debug {
 
     static disable() {
         this.enabled = false;
+    }
+
+    static isEnabled(): boolean {
+        return this.enabled;
     }
 }

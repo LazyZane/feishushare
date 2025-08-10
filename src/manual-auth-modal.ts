@@ -20,20 +20,31 @@ export class ManualAuthModal extends Modal {
 		// 说明文字
 		const descEl = contentEl.createDiv('setting-item-description');
 		descEl.style.marginBottom = '20px';
-		descEl.innerHTML = `
-			<p><strong>🚀 简化授权流程 - 只需复制粘贴URL：</strong></p>
-			<ol>
-				<li>点击下方的"打开授权页面"按钮</li>
-				<li>在弹出的飞书页面中登录并确认授权</li>
-				<li>授权成功后，会跳转到一个显示错误的页面（这是正常的）</li>
-				<li><strong>复制浏览器地址栏的完整URL</strong>（包含 code= 参数）</li>
-				<li>将完整URL粘贴到下方输入框中</li>
-				<li>点击"完成授权"按钮</li>
-			</ol>
-			<div style="background: var(--background-modifier-success); padding: 10px; border-radius: 4px; margin-top: 10px;">
-				<strong>💡 提示：</strong>无需手动提取授权码，直接复制完整的回调URL即可！
-			</div>
+
+		const titleP = descEl.createEl('p');
+		const titleStrong = titleP.createEl('strong');
+		titleStrong.textContent = '🚀 简化授权流程 - 只需复制粘贴URL：';
+
+		const stepsList = descEl.createEl('ol');
+		stepsList.createEl('li').textContent = '点击下方的"打开授权页面"按钮';
+		stepsList.createEl('li').textContent = '在弹出的飞书页面中登录并确认授权';
+		stepsList.createEl('li').textContent = '授权成功后，会跳转到一个显示错误的页面（这是正常的）';
+		const step4 = stepsList.createEl('li');
+		step4.createEl('strong').textContent = '复制浏览器地址栏的完整URL';
+		step4.appendText('（包含 code= 参数）');
+		stepsList.createEl('li').textContent = '将完整URL粘贴到下方输入框中';
+		stepsList.createEl('li').textContent = '点击"完成授权"按钮';
+
+		const tipDiv = descEl.createDiv();
+		tipDiv.style.cssText = `
+			background: var(--background-modifier-success);
+			padding: 10px;
+			border-radius: 4px;
+			margin-top: 10px;
 		`;
+		const tipStrong = tipDiv.createEl('strong');
+		tipStrong.textContent = '💡 提示：';
+		tipDiv.appendText('无需手动提取授权码，直接复制完整的回调URL即可！');
 
 		// 打开授权页面按钮
 		new Setting(contentEl)

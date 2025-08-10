@@ -4,6 +4,7 @@ import { DEFAULT_SETTINGS } from './src/constants';
 import { FeishuApiService } from './src/feishu-api';
 import { FeishuSettingTab } from './src/settings';
 import { MarkdownProcessor } from './src/markdown-processor';
+import { Debug } from './src/debug';
 
 export default class FeishuPlugin extends Plugin {
 	settings: FeishuSettings;
@@ -242,7 +243,7 @@ export default class FeishuPlugin extends Plugin {
 			const message = `✅ 分享成功！文档：${result.title}`;
 			const notice = new Notice(message, 8000);
 
-			// 创建按钮容器，使用内联样式实现并排布局
+			// 创建按钮容器
 			const buttonContainer = notice.noticeEl.createEl('div');
 			buttonContainer.style.cssText = `
 				display: flex;
@@ -255,9 +256,7 @@ export default class FeishuPlugin extends Plugin {
 				text: '📋 复制链接',
 				cls: 'mod-cta'
 			});
-			copyButton.style.cssText = `
-				flex: 1;
-			`;
+			copyButton.style.cssText = `flex: 1;`;
 
 			copyButton.onclick = async () => {
 				try {
@@ -278,9 +277,7 @@ export default class FeishuPlugin extends Plugin {
 				text: '🔗 打开',
 				cls: 'mod-muted'
 			});
-			openButton.style.cssText = `
-				flex: 1;
-			`;
+			openButton.style.cssText = `flex: 1;`;
 
 			openButton.onclick = () => {
 				if (result.url) {
@@ -297,7 +294,7 @@ export default class FeishuPlugin extends Plugin {
 	 * 统一的错误处理方法
 	 */
 	private handleError(error: Error, context: string, userMessage?: string): void {
-		console.error(`[Feishu Plugin] ${context}:`, error);
+		Debug.error(`${context}:`, error);
 
 		const message = userMessage || `❌ ${context}失败: ${error.message}`;
 		new Notice(message);
@@ -307,16 +304,15 @@ export default class FeishuPlugin extends Plugin {
 	 * 统一的日志记录方法
 	 */
 	private log(message: string, level: 'info' | 'warn' | 'error' = 'info'): void {
-		const prefix = '[Feishu Plugin]';
 		switch (level) {
 			case 'error':
-				console.error(`${prefix} ${message}`);
+				Debug.error(message);
 				break;
 			case 'warn':
-				console.warn(`${prefix} ${message}`);
+				Debug.warn(message);
 				break;
 			default:
-				console.log(`${prefix} ${message}`);
+				Debug.log(message);
 		}
 	}
 }

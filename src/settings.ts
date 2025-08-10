@@ -17,12 +17,13 @@ export class FeishuSettingTab extends PluginSettingTab {
 
 		// 标题和说明
 		containerEl.createEl('h2', { text: '飞书分享设置' });
-		
+
 		const descEl = containerEl.createDiv('setting-item-description');
-		descEl.innerHTML = `
-			<p>直连飞书API，回调地址仅中转无记录。</p>
-			<p><strong>特点：</strong>无依赖、更安全、响应更快</p>
-		`;
+		const p1 = descEl.createEl('p');
+		p1.textContent = '直连飞书API，回调地址仅中转无记录。';
+		const p2 = descEl.createEl('p');
+		p2.createEl('strong').textContent = '特点：';
+		p2.appendText('无依赖、更安全、响应更快');
 
 		// 应用配置部分
 		containerEl.createEl('h3', { text: '🔧 应用配置' });
@@ -75,13 +76,21 @@ export class FeishuSettingTab extends PluginSettingTab {
 		
 		const statusDesc = authStatusInfo.createDiv('setting-item-description');
 		if (this.plugin.settings.userInfo) {
-			statusDesc.innerHTML = `
-				<span style="color: var(--text-success);">✅ 已授权</span><br>
-				<strong>用户：</strong>${this.plugin.settings.userInfo.name}<br>
-				<strong>邮箱：</strong>${this.plugin.settings.userInfo.email}
-			`;
+			const statusSpan = statusDesc.createEl('span', { text: '✅ 已授权' });
+			statusSpan.style.color = 'var(--text-success)';
+			statusDesc.createEl('br');
+			const userInfoDiv = statusDesc.createDiv();
+			userInfoDiv.style.marginTop = '4px';
+			const userLabel = userInfoDiv.createEl('strong');
+			userLabel.textContent = '用户：';
+			userInfoDiv.appendText(this.plugin.settings.userInfo.name);
+			userInfoDiv.createEl('br');
+			const emailLabel = userInfoDiv.createEl('strong');
+			emailLabel.textContent = '邮箱：';
+			userInfoDiv.appendText(this.plugin.settings.userInfo.email);
 		} else {
-			statusDesc.innerHTML = '<span style="color: var(--text-error);">❌ 未授权</span>';
+			const statusSpan = statusDesc.createEl('span', { text: '❌ 未授权' });
+			statusSpan.style.color = 'var(--text-error)';
 		}
 
 		// 自动授权按钮（推荐）
@@ -261,7 +270,7 @@ export class FeishuSettingTab extends PluginSettingTab {
 		const usageEl = containerEl.createDiv('setting-item-description');
 
 		// 详细使用说明链接
-		const usageLinkDiv = usageEl.createDiv('feishu-usage-link');
+		const usageLinkDiv = usageEl.createDiv();
 		usageLinkDiv.createEl('strong', { text: '📚 详细使用说明' });
 		usageLinkDiv.createEl('br');
 		const usageLink = usageLinkDiv.createEl('a', {
@@ -271,12 +280,8 @@ export class FeishuSettingTab extends PluginSettingTab {
 		usageLink.target = '_blank';
 
 		// 快速配置指南
-		const guideDiv = usageEl.createDiv('feishu-usage-guide');
-
-		guideDiv.createEl('strong', {
-			text: '📋 快速配置指南',
-			cls: 'feishu-usage-guide-title'
-		});
+		const guideDiv = usageEl.createDiv();
+		guideDiv.createEl('strong', { text: '📋 快速配置指南' });
 
 		const stepsList = guideDiv.createEl('ol');
 
@@ -328,11 +333,8 @@ export class FeishuSettingTab extends PluginSettingTab {
 		step6.appendText('右键MD文件选择"📤 分享到飞书"，或使用命令面板');
 
 		// 功能特色
-		const featuresDiv = usageEl.createDiv('feishu-usage-guide');
-		featuresDiv.createEl('strong', {
-			text: '🎉 功能特色：',
-			cls: 'feishu-usage-guide-title'
-		});
+		const featuresDiv = usageEl.createDiv();
+		featuresDiv.createEl('strong', { text: '🎉 功能特色：' });
 
 		const featuresList = featuresDiv.createEl('ul');
 		featuresList.createEl('li', { text: '✅ 智能授权：自动检测token状态，失效时自动重新授权' });
@@ -352,27 +354,23 @@ export class FeishuSettingTab extends PluginSettingTab {
 
 private addAuthorSection(containerEl: HTMLElement) {
 	// 添加分隔线
-	containerEl.createEl('hr', { cls: 'feishu-author-separator' });
+	containerEl.createEl('hr');
 
 	// 创建作者信息区域
-	const authorSection = containerEl.createDiv({ cls: 'feishu-author-section' });
+	const authorSection = containerEl.createDiv();
 
 	// 添加标题
-	authorSection.createEl('h4', {
-		text: '👨‍💻 了解作者',
-		cls: 'feishu-author-title'
-	});
+	authorSection.createEl('h4', { text: '👨‍💻 了解作者' });
 
 	// 添加描述
 	authorSection.createEl('p', {
-		text: '想了解更多关于作者和其他项目的信息？',
-		cls: 'feishu-author-description'
+		text: '想了解更多关于作者和其他项目的信息？'
 	});
 
 	// 添加按钮
 	const authorButton = authorSection.createEl('button', {
 		text: '🌐 访问作者主页',
-		cls: 'feishu-author-button'
+		cls: 'mod-cta'
 	});
 
 	authorButton.addEventListener('click', () => {
@@ -385,55 +383,45 @@ private addAuthorSection(containerEl: HTMLElement) {
  */
 private addRewardSection(containerEl: HTMLElement) {
 	// 添加分隔线
-	containerEl.createEl('hr', { cls: 'feishu-reward-separator' });
+	containerEl.createEl('hr');
 
 	// 创建打赏区域
-	const rewardSection = containerEl.createDiv({ cls: 'feishu-reward-section' });
+	const rewardSection = containerEl.createDiv();
 
 	// 添加标题
-	rewardSection.createEl('h4', {
-		text: '☕ 支持作者',
-		cls: 'feishu-reward-title'
-	});
+	rewardSection.createEl('h4', { text: '☕ 支持作者' });
 
 	// 添加描述
 	rewardSection.createEl('p', {
-		text: '如果这个插件对您有帮助，欢迎通过微信扫码打赏支持作者继续开发！',
-		cls: 'feishu-reward-description'
+		text: '如果这个插件对您有帮助，欢迎通过微信扫码打赏支持作者继续开发！'
 	});
 
 	// 创建二维码容器
-	const qrContainer = rewardSection.createDiv({ cls: 'feishu-reward-qr-container' });
+	const qrContainer = rewardSection.createDiv();
 	qrContainer.style.cssText = `
 		text-align: center;
 		margin: 16px 0;
 		padding: 16px;
 		background-color: var(--background-secondary);
 		border-radius: 8px;
-		border: 1px solid var(--background-modifier-border);
 	`;
 
 	// 添加二维码图片
-	const qrImage = qrContainer.createEl('img', {
-		cls: 'feishu-reward-qr-image'
-	});
-	// 使用Base64编码的图片
-	qrImage.src = 'data:image/jpeg;base64,' + this.getRewardQRCodeBase64();
+	const qrImage = qrContainer.createEl('img');
 	qrImage.style.cssText = `
 		max-width: 200px;
 		max-height: 200px;
 		width: auto;
 		height: auto;
 		border-radius: 4px;
-		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 	`;
+	// 使用Base64编码的图片
+	qrImage.src = 'data:image/jpeg;base64,' + this.getRewardQRCodeBase64();
 	qrImage.alt = '微信打赏二维码';
 
 	// 添加提示文字
-	qrContainer.createEl('p', {
-		text: '微信扫一扫，支持作者',
-		cls: 'feishu-reward-hint'
-	}).style.cssText = `
+	const hintP = qrContainer.createEl('p', { text: '微信扫一扫，支持作者' });
+	hintP.style.cssText = `
 		margin-top: 8px;
 		font-size: 14px;
 		color: var(--text-muted);
