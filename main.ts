@@ -208,6 +208,20 @@ export default class FeishuPlugin extends Plugin {
 
 			if (result.success) {
 				this.log(`File shared successfully: ${result.title}`);
+
+				// 如果启用了分享标记功能且获取到了分享链接，则更新文件的 Front Matter
+				if (this.settings.enableShareMarkInFrontMatter && result.url) {
+					try {
+						this.log('Adding share mark to front matter');
+						const updatedContent = this.markdownProcessor.addShareMarkToFrontMatter(rawContent, result.url);
+						await this.app.vault.modify(file, updatedContent);
+						this.log('Share mark added successfully');
+					} catch (error) {
+						this.log(`Failed to add share mark: ${error.message}`, 'warn');
+						// 不影响主要的分享成功流程，只记录警告
+					}
+				}
+
 				this.showSuccessNotification(result);
 			} else {
 				this.log(`Share failed: ${result.error}`, 'error');

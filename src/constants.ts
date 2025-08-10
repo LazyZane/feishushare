@@ -45,6 +45,8 @@ export const DEFAULT_SETTINGS: Partial<FeishuSettings> = {
 	enableSubDocumentUpload: true,
 	enableLocalImageUpload: true,
 	enableLocalAttachmentUpload: true,
+	// 新增：分享标记默认设置
+	enableShareMarkInFrontMatter: true,
 };
 
 export const FEISHU_ERROR_MESSAGES: Record<number, string> = {

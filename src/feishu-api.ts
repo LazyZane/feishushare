@@ -17,6 +17,7 @@ import {
 } from './types';
 import { FEISHU_CONFIG, FEISHU_ERROR_MESSAGES } from './constants';
 import { Debug } from './debug';
+import { MarkdownProcessor } from './markdown-processor';
 
 /**
  * 飞书 API 服务类 - 直接实现版本
@@ -24,10 +25,12 @@ import { Debug } from './debug';
 export class FeishuApiService {
 	private settings: FeishuSettings;
 	private app: App;
+	private markdownProcessor: MarkdownProcessor;
 
 	constructor(settings: FeishuSettings, app: App) {
 		this.settings = settings;
 		this.app = app;
+		this.markdownProcessor = new MarkdownProcessor(app);
 	}
 
 	/**
@@ -2017,6 +2020,26 @@ export class FeishuApiService {
 
 				// 在父文档中插入子文档链接
 				await this.insertSubDocumentLink(parentDocumentId, subDoc, subDocResult);
+
+				// 如果启用了分享标记功能且获取到了分享链接，则更新子文档的 Front Matter
+				if (this.settings.enableShareMarkInFrontMatter && subDocResult.url) {
+					try {
+						Debug.log(`📝 Adding share mark to sub-document: ${subDoc.fileName}`);
+						const updatedSubDocContent = this.markdownProcessor.addShareMarkToFrontMatter(subDocContent, subDocResult.url);
+
+						// 获取子文档的 TFile 对象
+						const subDocFile = this.app.vault.getAbstractFileByPath(subDoc.originalPath);
+						if (subDocFile instanceof TFile) {
+							await this.app.vault.modify(subDocFile, updatedSubDocContent);
+							Debug.log(`✅ Share mark added to sub-document: ${subDoc.fileName}`);
+						} else {
+							Debug.warn(`⚠️ Could not find sub-document file: ${subDoc.originalPath}`);
+						}
+					} catch (error) {
+						Debug.warn(`⚠️ Failed to add share mark to sub-document ${subDoc.fileName}: ${error.message}`);
+						// 不影响主要的分享成功流程，只记录警告
+					}
+				}
 
 				Debug.log(`✅ Successfully processed sub-document: ${subDoc.fileName}`);
 

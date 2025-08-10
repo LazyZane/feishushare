@@ -35,6 +35,8 @@ export interface FeishuSettings {
 	enableSubDocumentUpload: boolean;
 	enableLocalImageUpload: boolean;
 	enableLocalAttachmentUpload: boolean;
+	// 新增：分享标记设置
+	enableShareMarkInFrontMatter: boolean;
 }
 
 export interface FeishuUserInfo {

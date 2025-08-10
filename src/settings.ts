@@ -211,6 +211,19 @@ export class FeishuSettingTab extends PluginSettingTab {
 					});
 			});
 
+		// 分享标记开关
+		new Setting(containerEl)
+			.setName('自动添加分享标记')
+			.setDesc('分享成功后，自动在笔记的 Front Matter 中添加分享标记（feishushare: true、分享链接和时间）')
+			.addToggle(toggle => {
+				toggle
+					.setValue(this.plugin.settings.enableShareMarkInFrontMatter)
+					.onChange(async (value) => {
+						this.plugin.settings.enableShareMarkInFrontMatter = value;
+						await this.plugin.saveSettings();
+					});
+			});
+
 		// 分享权限设置部分
 		containerEl.createEl('h3', { text: '🔗 分享权限设置' });
 

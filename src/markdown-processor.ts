@@ -185,6 +185,24 @@ export class MarkdownProcessor {
 	}
 
 	/**
+	 * 处理普通链接，确保特殊协议链接保持可点击状态
+	 */
+	private processLinks(content: string): string {
+		// 处理普通的 [text](url) 格式链接
+		return content.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
+			// 检查是否为 Obsidian 协议链接
+			if (url.startsWith('obsidian://')) {
+				// 简单地去掉中括号，保留文本和URL
+				// 格式：文本(obsidian://...)
+				return `${text}(${url})`;
+			}
+
+			// 其他链接保持原样
+			return match;
+		});
+	}
+
+	/**
 	 * 清理多余的空白字符
 	 */
 	private cleanupWhitespace(content: string): string {
@@ -321,6 +339,7 @@ export class MarkdownProcessor {
 		processedContent = this.processBlockReferences(processedContent);
 		processedContent = this.processEmbeds(processedContent);
 		processedContent = this.processImages(processedContent);
+		processedContent = this.processLinks(processedContent); // 处理普通链接
 		processedContent = this.processTags(processedContent);
 		processedContent = this.processHighlights(processedContent);
 		processedContent = this.processMathFormulas(processedContent);
@@ -528,6 +547,7 @@ export class MarkdownProcessor {
 		processedContent = this.processBlockReferences(processedContent);
 		processedContent = this.processEmbeds(processedContent, context);
 		processedContent = this.processImages(processedContent, context);
+		processedContent = this.processLinks(processedContent); // 处理普通链接，确保特殊协议链接保持可点击
 		processedContent = this.processTags(processedContent);
 		processedContent = this.processHighlights(processedContent);
 		processedContent = this.processMathFormulas(processedContent);
@@ -675,5 +695,53 @@ export class MarkdownProcessor {
 
 		// 回退到文件名
 		return fileName;
+	}
+
+	/**
+	 * 在文件内容中添加或更新分享标记到 Front Matter
+	 * @param content 原始文件内容
+	 * @param shareUrl 分享链接
+	 * @returns 更新后的文件内容
+	 */
+	addShareMarkToFrontMatter(content: string, shareUrl: string): string {
+		// 获取东8区时间
+		const now = new Date();
+		const chinaTime = new Date(now.getTime() + (8 * 60 * 60 * 1000)); // UTC+8
+		const currentTime = chinaTime.toISOString().replace('Z', '+08:00');
+
+		// 解析现有的 Front Matter
+		const { frontMatter, content: contentWithoutFrontMatter } = this.parseFrontMatter(content);
+
+		// 创建或更新分享标记
+		const updatedFrontMatter: FrontMatterData = {
+			...frontMatter,
+			feishushare: true,
+			feishu_url: shareUrl,
+			feishu_shared_at: currentTime
+		};
+
+		// 重新构建 Front Matter
+		const frontMatterLines = ['---'];
+
+		// 添加所有字段
+		for (const [key, value] of Object.entries(updatedFrontMatter)) {
+			if (value !== null && value !== undefined) {
+				if (typeof value === 'string') {
+					// 如果字符串包含特殊字符，用引号包围
+					if (value.includes(':') || value.includes('#') || value.includes('[') || value.includes(']')) {
+						frontMatterLines.push(`${key}: "${value}"`);
+					} else {
+						frontMatterLines.push(`${key}: ${value}`);
+					}
+				} else {
+					frontMatterLines.push(`${key}: ${value}`);
+				}
+			}
+		}
+
+		frontMatterLines.push('---');
+
+		// 组合最终内容
+		return frontMatterLines.join('\n') + '\n' + contentWithoutFrontMatter;
 	}
 }
