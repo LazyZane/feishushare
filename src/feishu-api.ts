@@ -1115,13 +1115,44 @@ export class FeishuApiService {
 	}
 
 	/**
-	 * 删除源文件
+	 * 删除源文件（改进版本）
 	 */
 	private async deleteSourceFile(fileToken: string): Promise<void> {
 		try {
+			Debug.verbose(`🗑️ Attempting to delete source file: ${fileToken}`);
+
+			// 先检查文件是否存在
+			let fileExists = false;
+			try {
+				const checkResponse = await requestUrl({
+					url: `${FEISHU_CONFIG.BASE_URL}/drive/v1/files/${fileToken}/meta`,
+					method: 'GET',
+					headers: {
+						'Authorization': `Bearer ${this.settings.accessToken}`,
+						'Content-Type': 'application/json'
+					}
+				});
+
+				const checkData = checkResponse.json || JSON.parse(checkResponse.text);
+				fileExists = checkData.code === 0;
+				Debug.verbose(`🗑️ File existence check: ${fileExists ? 'exists' : 'not found'}`);
+
+			} catch (checkError) {
+				Debug.verbose(`🗑️ File existence check failed, assuming file exists:`, checkError.message);
+				fileExists = true; // 假设文件存在，继续删除流程
+			}
+
+			if (!fileExists) {
+				Debug.log(`📝 Source file ${fileToken} does not exist, skipping deletion`);
+				return;
+			}
+
 			// 方法1：尝试移动到回收站
 			let response: any;
+			let deleteMethod = 'trash';
+
 			try {
+				Debug.verbose(`🗑️ Trying trash method for file: ${fileToken}`);
 				response = await requestUrl({
 					url: `${FEISHU_CONFIG.BASE_URL}/drive/v1/files/${fileToken}/trash`,
 					method: 'POST',
@@ -1131,36 +1162,70 @@ export class FeishuApiService {
 					},
 					body: JSON.stringify({})
 				});
+
+				Debug.verbose(`🗑️ Trash method response status: ${response.status}`);
+
 			} catch (trashError) {
-				Debug.warn('⚠️ Trash method failed, trying direct delete...');
+				const errorMsg = trashError.message || trashError.toString();
+
+				// 如果是404错误，说明文件已经不存在了
+				if (errorMsg.includes('404')) {
+					Debug.log(`📝 Source file ${fileToken} not found (404), likely already deleted`);
+					return;
+				}
+
+				Debug.warn(`⚠️ Trash method failed for ${fileToken}:`, errorMsg);
+				Debug.log('🔄 Falling back to direct delete method...');
+
+				deleteMethod = 'direct';
+
 				// 方法2：尝试直接删除
-				response = await requestUrl({
-					url: `${FEISHU_CONFIG.BASE_URL}/drive/v1/files/${fileToken}?type=file`,
-					method: 'DELETE',
-					headers: {
-						'Authorization': `Bearer ${this.settings.accessToken}`,
-						'Content-Type': 'application/json'
+				try {
+					response = await requestUrl({
+						url: `${FEISHU_CONFIG.BASE_URL}/drive/v1/files/${fileToken}?type=file`,
+						method: 'DELETE',
+						headers: {
+							'Authorization': `Bearer ${this.settings.accessToken}`,
+							'Content-Type': 'application/json'
+						}
+					});
+
+					Debug.verbose(`🗑️ Direct delete response status: ${response.status}`);
+
+				} catch (directError) {
+					const directErrorMsg = directError.message || directError.toString();
+
+					// 如果直接删除也是404，说明文件确实不存在
+					if (directErrorMsg.includes('404')) {
+						Debug.log(`📝 Source file ${fileToken} not found during direct delete, likely already deleted`);
+						return;
 					}
-				});
+
+					throw directError; // 其他错误继续抛出
+				}
 			}
 
+			// 检查响应状态
 			if (response.status !== 200) {
 				throw new Error(`删除请求失败，状态码: ${response.status}`);
 			}
 
 			const data = response.json || JSON.parse(response.text);
+			Debug.verbose(`🗑️ Delete response data:`, data);
 
 			if (data.code !== 0) {
-				Debug.warn('⚠️ Delete API returned non-zero code:', data.code, data.msg);
+				Debug.warn(`⚠️ Delete API returned non-zero code: ${data.code} - ${data.msg}`);
 				// 不抛出错误，因为文件可能已经被删除或移动
-				Debug.log('📝 Source file deletion completed (may have been moved to trash)');
+				Debug.log(`📝 Source file deletion completed with warning (method: ${deleteMethod})`);
 			} else {
-				}
+				Debug.log(`✅ Source file deleted successfully using ${deleteMethod} method: ${fileToken}`);
+			}
 
 		} catch (error) {
 			Debug.error('❌ Delete source file error:', error);
+			Debug.warn(`⚠️ Failed to delete source file ${fileToken}, but continuing with process`);
 			// 不抛出错误，避免影响整个分享流程
-			}
+		}
 	}
 
 	/**
@@ -2026,44 +2091,186 @@ export class FeishuApiService {
 					this.settings.titleSource
 				);
 
-				// 上传子文档到飞书
-				const subDocResult = await this.uploadSubDocument(subDocTitle, processResult.content, statusNotice);
+				// 检查子文档是否已有飞书URL
+				Debug.step(`Processing sub-document: ${subDoc.fileName}`);
+				Debug.verbose(`Sub-document path: ${subDoc.originalPath}`);
+				Debug.verbose(`Sub-document title: ${subDocTitle}`);
+				Debug.verbose(`Front Matter:`, processResult.frontMatter);
+
+				const existingUrl = this.getExistingFeishuUrl(processResult.frontMatter);
+				let subDocResult: SubDocumentResult;
+				let urlChanged = false;
+
+				Debug.verbose(`Existing URL check result: ${existingUrl || 'No URL found'}`);
+
+				if (existingUrl) {
+					Debug.step(`Sub-document has existing URL, checking accessibility`);
+					Debug.log(`📋 Sub-document already has URL: ${subDoc.fileName} -> ${existingUrl}`);
+
+					// 检查现有URL是否可访问
+					Debug.verbose(`Checking URL accessibility for: ${existingUrl}`);
+					const urlAccessible = await this.checkDocumentUrlAccessibility(existingUrl);
+					Debug.verbose(`URL accessibility result:`, urlAccessible);
+
+					if (urlAccessible.isAccessible) {
+						Debug.step(`URL is accessible, reusing without any operations`);
+						Debug.log(`✅ Existing URL is accessible, reusing directly: ${existingUrl}`);
+
+						// 直接使用现有URL，不做任何导入或更新操作
+						const documentId = this.extractDocumentIdFromUrl(existingUrl);
+						Debug.verbose(`Extracted document ID: ${documentId}`);
+
+						subDocResult = {
+							success: true,
+							documentToken: documentId || undefined,
+							url: existingUrl,
+							title: subDocTitle
+						};
+
+						Debug.result(`Sub-document URL reused`, true, {
+							fileName: subDoc.fileName,
+							url: existingUrl,
+							documentId: documentId
+						});
+					} else if (urlAccessible.needsReauth) {
+						Debug.step(`Sub-document needs reauth, token should already be refreshed by main document`);
+						Debug.log(`🔑 Sub-document URL needs reauth, retrying: ${subDoc.fileName}`);
+
+						// 主文档应该已经处理了重新授权，直接重试
+						const retryAccessible = await this.checkDocumentUrlAccessibility(existingUrl);
+						Debug.verbose(`Retry accessibility result:`, retryAccessible);
+
+						if (retryAccessible.isAccessible) {
+							Debug.step(`URL is now accessible after reauth, reusing`);
+							Debug.log(`✅ Sub-document URL accessible after reauth: ${existingUrl}`);
+
+							const documentId = this.extractDocumentIdFromUrl(existingUrl);
+							subDocResult = {
+								success: true,
+								documentToken: documentId || undefined,
+								url: existingUrl,
+								title: subDocTitle
+							};
+
+							Debug.result(`Sub-document URL reused after reauth`, true, {
+								fileName: subDoc.fileName,
+								url: existingUrl,
+								documentId: documentId
+							});
+						} else {
+							Debug.step(`URL still not accessible after reauth, creating new document`);
+							Debug.warn(`⚠️ Sub-document URL still not accessible after reauth: ${existingUrl}, reason: ${retryAccessible.error}`);
+
+							subDocResult = await this.uploadSubDocument(subDocTitle, processResult.content, statusNotice);
+							urlChanged = true;
+
+							if (subDocResult.success) {
+								Debug.result(`Sub-document URL changed after failed reauth`, true, {
+									fileName: subDoc.fileName,
+									oldUrl: existingUrl,
+									newUrl: subDocResult.url
+								});
+							}
+						}
+					} else {
+						Debug.step(`URL is not accessible, creating new document`);
+						Debug.warn(`⚠️ Existing URL is not accessible: ${existingUrl}, reason: ${urlAccessible.error}`);
+						Debug.log(`📤 Creating new sub-document to replace inaccessible one: ${subDoc.fileName}`);
+
+						// URL不可访问，创建新文档
+						Debug.verbose(`Starting uploadSubDocument for: ${subDoc.fileName}`);
+						subDocResult = await this.uploadSubDocument(subDocTitle, processResult.content, statusNotice);
+						urlChanged = true;
+
+						if (subDocResult.success) {
+							Debug.result(`Sub-document URL changed`, true, {
+								fileName: subDoc.fileName,
+								oldUrl: existingUrl,
+								newUrl: subDocResult.url
+							});
+						}
+					}
+				} else {
+					Debug.step(`No existing URL, creating new document`);
+
+					// 检查是否之前应该有URL但丢失了
+					const hasFeishuSharedAt = processResult.frontMatter?.feishu_shared_at;
+					if (hasFeishuSharedAt) {
+						Debug.warn(`⚠️ Sub-document has feishu_shared_at but no feishu_url, URL may have been lost: ${subDoc.fileName}`);
+						Debug.warn(`⚠️ This may indicate a previous sharing issue or manual Front Matter modification`);
+					}
+
+					Debug.log(`📤 Sub-document has no existing URL, creating new: ${subDoc.fileName}`);
+
+					// 没有现有URL，正常上传
+					Debug.verbose(`Starting uploadSubDocument for new document: ${subDoc.fileName}`);
+					subDocResult = await this.uploadSubDocument(subDocTitle, processResult.content, statusNotice);
+				}
+
 				if (!subDocResult.success) {
-					Debug.warn(`⚠️ Failed to upload sub-document: ${subDoc.fileName}, error: ${subDocResult.error}`);
+					Debug.warn(`⚠️ Failed to process sub-document: ${subDoc.fileName}, error: ${subDocResult.error}`);
 					continue;
 				}
 
-				// 处理子文档内部的本地文件（图片、附件等）
-				if (processResult.localFiles.length > 0) {
-					try {
-						Debug.log(`📎 Processing ${processResult.localFiles.length} local files in sub-document: ${subDoc.fileName}`);
-						await this.processFileUploads(subDocResult.documentToken!, processResult.localFiles, statusNotice);
-						Debug.log(`✅ Successfully processed local files in sub-document: ${subDoc.fileName}`);
-					} catch (fileError) {
-						Debug.warn(`⚠️ Failed to process local files in sub-document ${subDoc.fileName}:`, fileError);
-						// 文件处理失败不影响子文档上传成功
+				// 只有在创建新文档时才处理本地文件（复用URL时不需要处理）
+				if (!existingUrl || urlChanged) {
+					// 处理子文档内部的本地文件（图片、附件等）
+					if (processResult.localFiles.length > 0 && subDocResult.documentToken) {
+						try {
+							Debug.log(`📎 Processing ${processResult.localFiles.length} local files in sub-document: ${subDoc.fileName}`);
+							await this.processFileUploads(subDocResult.documentToken, processResult.localFiles, statusNotice);
+							Debug.log(`✅ Successfully processed local files in sub-document: ${subDoc.fileName}`);
+						} catch (fileError) {
+							Debug.warn(`⚠️ Failed to process local files in sub-document ${subDoc.fileName}:`, fileError);
+							// 文件处理失败不影响子文档上传成功
+						}
 					}
+				} else {
+					Debug.log(`📋 Skipping file processing for sub-document with existing URL: ${subDoc.fileName}`);
 				}
 
 				// 在父文档中插入子文档链接
 				await this.insertSubDocumentLink(parentDocumentId, subDoc, subDocResult);
 
-				// 如果启用了分享标记功能且获取到了分享链接，则更新子文档的 Front Matter
+				// 更新子文档的 Front Matter
 				if (this.settings.enableShareMarkInFrontMatter && subDocResult.url) {
 					try {
-						Debug.log(`📝 Adding share mark to sub-document: ${subDoc.fileName}`);
-						const updatedSubDocContent = this.markdownProcessor.addShareMarkToFrontMatter(subDocContent, subDocResult.url);
-
-						// 获取子文档的 TFile 对象
 						const subDocFile = this.app.vault.getAbstractFileByPath(subDoc.originalPath);
 						if (subDocFile instanceof TFile) {
-							await this.app.vault.modify(subDocFile, updatedSubDocContent);
-							Debug.log(`✅ Share mark added to sub-document: ${subDoc.fileName}`);
+							let shouldUpdateFrontMatter = false;
+							let notificationMessage = '';
+
+							if (urlChanged) {
+								// URL发生了变化，需要更新并提醒用户
+								Debug.log(`🔄 URL changed for sub-document: ${subDoc.fileName}`);
+								Debug.log(`   Old URL: ${existingUrl}`);
+								Debug.log(`   New URL: ${subDocResult.url}`);
+								shouldUpdateFrontMatter = true;
+								notificationMessage = `子文档 "${subDoc.fileName}" 的飞书链接已更新（原链接不可访问）`;
+							} else if (!existingUrl) {
+								// 新文档，添加标记
+								Debug.log(`📝 Adding share mark to new sub-document: ${subDoc.fileName}`);
+								shouldUpdateFrontMatter = true;
+							} else {
+								// URL没有变化，不需要更新Front Matter
+								Debug.log(`📋 Sub-document URL unchanged, skipping Front Matter update: ${subDoc.fileName}`);
+							}
+
+							if (shouldUpdateFrontMatter) {
+								const updatedSubDocContent = this.markdownProcessor.addShareMarkToFrontMatter(subDocContent, subDocResult.url);
+								await this.app.vault.modify(subDocFile, updatedSubDocContent);
+								Debug.log(`✅ Share mark updated for sub-document: ${subDoc.fileName}`);
+
+								// 如果URL发生了变化，显示通知
+								if (notificationMessage) {
+									new Notice(notificationMessage, 5000);
+								}
+							}
 						} else {
 							Debug.warn(`⚠️ Could not find sub-document file: ${subDoc.originalPath}`);
 						}
 					} catch (error) {
-						Debug.warn(`⚠️ Failed to add share mark to sub-document ${subDoc.fileName}: ${error.message}`);
+						Debug.warn(`⚠️ Failed to update share mark for sub-document ${subDoc.fileName}: ${error.message}`);
 						// 不影响主要的分享成功流程，只记录警告
 					}
 				}
@@ -2120,6 +2327,156 @@ export class FeishuApiService {
 		} catch (error) {
 			Debug.error(`❌ Error reading sub-document ${filePath}:`, error);
 			return null;
+		}
+	}
+
+	/**
+	 * 从Front Matter中获取现有的飞书URL
+	 * @param frontMatter Front Matter数据
+	 * @returns 现有的飞书URL，如果没有则返回null
+	 */
+	private getExistingFeishuUrl(frontMatter: any): string | null {
+		Debug.verbose(`Checking Front Matter for existing URL:`, frontMatter);
+
+		if (!frontMatter) {
+			Debug.verbose(`No Front Matter found`);
+			return null;
+		}
+
+		const feishuUrl = frontMatter.feishu_url;
+		Debug.verbose(`feishu_url field value:`, feishuUrl);
+
+		if (feishuUrl && typeof feishuUrl === 'string' && feishuUrl.trim()) {
+			Debug.result(`Found existing Feishu URL`, true, feishuUrl);
+			return feishuUrl.trim();
+		}
+
+		Debug.verbose(`No valid Feishu URL found in Front Matter`);
+		return null;
+	}
+
+	/**
+	 * 检查文档URL的可访问性（支持重新授权后重试）
+	 * @param feishuUrl 飞书文档URL
+	 * @returns 可访问性检查结果
+	 */
+	async checkDocumentUrlAccessibility(feishuUrl: string): Promise<{isAccessible: boolean, error?: string, needsReauth?: boolean}> {
+		try {
+			Debug.step(`Checking document URL accessibility`);
+			Debug.verbose(`Target URL: ${feishuUrl}`);
+
+			// 从URL提取文档ID
+			const documentId = this.extractDocumentIdFromUrl(feishuUrl);
+			Debug.verbose(`Extracted document ID: ${documentId}`);
+
+			if (!documentId) {
+				Debug.result(`URL format validation`, false, 'Cannot extract document ID');
+				return { isAccessible: false, error: 'URL格式无效，无法提取文档ID' };
+			}
+
+			// 检查文档访问权限
+			Debug.verbose(`Checking document access for ID: ${documentId}`);
+			const accessCheck = await this.checkDocumentAccess(documentId);
+			Debug.verbose(`Access check result:`, accessCheck);
+
+			if (accessCheck.hasAccess) {
+				Debug.result(`Document URL accessibility`, true, feishuUrl);
+				return { isAccessible: true };
+			} else if (accessCheck.needsReauth) {
+				Debug.result(`Document URL accessibility`, false, {
+					url: feishuUrl,
+					reason: accessCheck.error,
+					needsReauth: true
+				});
+				return { isAccessible: false, error: accessCheck.error, needsReauth: true };
+			} else {
+				Debug.result(`Document URL accessibility`, false, {
+					url: feishuUrl,
+					reason: accessCheck.error
+				});
+				return { isAccessible: false, error: accessCheck.error };
+			}
+
+		} catch (error) {
+			Debug.error('Check document URL accessibility error:', error);
+			return {
+				isAccessible: false,
+				error: error instanceof Error ? error.message : '检查URL可访问性失败'
+			};
+		}
+	}
+
+	/**
+	 * 更新文档内容（简化版本，用于子文档更新）
+	 * @param documentId 文档ID
+	 * @param processResult Markdown处理结果
+	 * @param statusNotice 状态通知
+	 */
+	private async updateDocumentContent(
+		documentId: string,
+		processResult: MarkdownProcessResult,
+		statusNotice?: Notice
+	): Promise<void> {
+		try {
+			Debug.log(`🔄 Updating document content: ${documentId}`);
+
+			// 1. 清空现有文档内容
+			if (statusNotice) {
+				statusNotice.setMessage('🧹 正在清空子文档内容...');
+			}
+
+			const clearResult = await this.clearDocumentContent(documentId);
+			if (!clearResult.success) {
+				throw new Error(clearResult.error || '清空文档内容失败');
+			}
+
+			// 2. 创建临时文档用于导入新内容
+			if (statusNotice) {
+				statusNotice.setMessage('📄 正在创建临时文档...');
+			}
+
+			const tempResult = await this.shareMarkdownWithFiles('temp_subdoc_' + Date.now(), processResult, statusNotice);
+			if (!tempResult.success) {
+				throw new Error(tempResult.error || '创建临时文档失败');
+			}
+
+			// 3. 提取临时文档ID
+			const tempDocumentId = this.extractDocumentIdFromUrl(tempResult.url!);
+			if (!tempDocumentId) {
+				throw new Error('无法从临时文档URL中提取文档ID');
+			}
+
+			try {
+				// 4. 复制临时文档内容到目标文档
+				if (statusNotice) {
+					statusNotice.setMessage('📋 正在复制内容到子文档...');
+				}
+
+				const copyResult = await this.copyContentToDocument(
+					tempDocumentId,
+					documentId,
+					processResult.localFiles
+				);
+
+				if (!copyResult.success) {
+					throw new Error(copyResult.error || '复制内容失败');
+				}
+
+				Debug.log(`✅ Sub-document content updated successfully: ${documentId}`);
+
+			} finally {
+				// 5. 删除临时文档
+				try {
+					await this.deleteDocument(tempDocumentId);
+					Debug.log('✅ Temporary sub-document deleted successfully');
+				} catch (deleteError) {
+					Debug.warn('⚠️ Failed to delete temporary sub-document:', deleteError);
+				}
+			}
+
+		} catch (error) {
+			Debug.error('Update document content error:', error);
+			throw error;
 		}
 	}
 
@@ -2517,6 +2874,905 @@ export class FeishuApiService {
 			throw error;
 		}
 	}
+
+	/**
+	 * 获取文档的所有块
+	 * @param documentId 文档ID
+	 * @returns 文档的所有块数据
+	 */
+	async getAllDocumentBlocks(documentId: string): Promise<any[]> {
+		try {
+			Debug.log(`📋 Getting all blocks for document: ${documentId}`);
+
+			let allBlocks: any[] = [];
+			let pageToken = '';
+			let hasMore = true;
+
+			while (hasMore) {
+				const params = new URLSearchParams({
+					page_size: '500'
+				});
+
+				if (pageToken) {
+					params.append('page_token', pageToken);
+				}
+
+				const response = await requestUrl({
+					url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks?${params.toString()}`,
+					method: 'GET',
+					headers: {
+						'Authorization': `Bearer ${this.settings.accessToken}`,
+						'Content-Type': 'application/json'
+					}
+				});
+
+				const data: FeishuDocBlocksResponse = response.json || JSON.parse(response.text);
+
+				if (data.code !== 0) {
+					throw new Error(data.msg || '获取文档块失败');
+				}
+
+				allBlocks.push(...data.data.items);
+				hasMore = data.data.has_more;
+				pageToken = data.data.page_token;
+			}
+
+			Debug.log(`📋 Retrieved ${allBlocks.length} blocks from document`);
+			return allBlocks;
+
+		} catch (error) {
+			Debug.error('Get all document blocks error:', error);
+			throw error;
+		}
+	}
+
+	/**
+	 * 清空文档内容（保留根块）
+	 * @param documentId 文档ID
+	 * @returns 清空操作结果
+	 */
+	async clearDocumentContent(documentId: string): Promise<{success: boolean, error?: string}> {
+		try {
+			Debug.log(`🧹 Starting to clear document content: ${documentId}`);
+
+			// 确保token有效
+			const tokenValid = await this.ensureValidToken();
+			if (!tokenValid) {
+				throw new Error('Token无效，请重新授权');
+			}
+
+			// 获取文档的所有块
+			const allBlocks = await this.getAllDocumentBlocks(documentId);
+
+			if (allBlocks.length === 0) {
+				Debug.log('📄 Document is already empty');
+				return { success: true };
+			}
+
+			// 找到根块（page类型的块）
+			const rootBlock = allBlocks.find(block => block.block_type === 1); // 1 = page
+			if (!rootBlock) {
+				throw new Error('未找到文档根块');
+			}
+
+			Debug.log(`📄 Found root block: ${rootBlock.block_id}`);
+
+			// 获取根块的直接子块
+			const rootChildren = rootBlock.children || [];
+
+			if (rootChildren.length === 0) {
+				Debug.log('📄 Document has no content to clear');
+				return { success: true };
+			}
+
+			Debug.log(`🗑️ Found ${rootChildren.length} child blocks to delete`);
+
+			// 批量删除根块的所有子块
+			const deleteResult = await this.batchDeleteBlocks(documentId, rootBlock.block_id, 0, rootChildren.length);
+
+			if (deleteResult.success) {
+				Debug.log(`✅ Successfully cleared document content: ${rootChildren.length} blocks deleted`);
+				return { success: true };
+			} else {
+				throw new Error(deleteResult.error || '批量删除失败');
+			}
+
+		} catch (error) {
+			Debug.error('Clear document content error:', error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : '清空文档内容失败'
+			};
+		}
+	}
+
+	/**
+	 * 批量删除块
+	 * @param documentId 文档ID
+	 * @param parentBlockId 父块ID
+	 * @param startIndex 开始索引
+	 * @param endIndex 结束索引
+	 * @returns 删除操作结果
+	 */
+	private async batchDeleteBlocks(
+		documentId: string,
+		parentBlockId: string,
+		startIndex: number,
+		endIndex: number
+	): Promise<{success: boolean, error?: string}> {
+		try {
+			Debug.log(`🗑️ Batch deleting blocks from ${startIndex} to ${endIndex} in parent ${parentBlockId}`);
+
+			const requestData = {
+				start_index: startIndex,
+				end_index: endIndex
+			};
+
+			const response = await requestUrl({
+				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${parentBlockId}/children/batch_delete`,
+				method: 'DELETE',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify(requestData)
+			});
+
+			const data = response.json || JSON.parse(response.text);
+
+			if (data.code !== 0) {
+				throw new Error(data.msg || '批量删除块失败');
+			}
+
+			Debug.log(`✅ Successfully deleted blocks from ${startIndex} to ${endIndex}`);
+			return { success: true };
+
+		} catch (error) {
+			Debug.error('Batch delete blocks error:', error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : '批量删除块失败'
+			};
+		}
+	}
+
+	// 文档ID缓存，避免重复提取
+	private documentIdCache = new Map<string, string | null>();
+
+	/**
+	 * 从飞书文档URL中提取文档ID（带缓存）
+	 * @param feishuUrl 飞书文档URL
+	 * @returns 文档ID，如果解析失败返回null
+	 */
+	extractDocumentIdFromUrl(feishuUrl: string): string | null {
+		try {
+			// 检查缓存
+			if (this.documentIdCache.has(feishuUrl)) {
+				const cachedId = this.documentIdCache.get(feishuUrl);
+				Debug.verbose(`🔍 Using cached document ID for: ${feishuUrl} -> ${cachedId}`);
+				return cachedId || null;
+			}
+
+			Debug.verbose(`🔍 Extracting document ID from URL: ${feishuUrl}`);
+
+			// 支持多种飞书文档URL格式
+			const patterns = [
+				/\/docx\/([a-zA-Z0-9]+)/,  // https://feishu.cn/docx/doxcnXXXXXX
+				/\/docs\/([a-zA-Z0-9]+)/,  // https://feishu.cn/docs/doccnXXXXXX (旧版)
+				/documents\/([a-zA-Z0-9]+)/, // API格式
+			];
+
+			for (const pattern of patterns) {
+				const match = feishuUrl.match(pattern);
+				if (match && match[1]) {
+					const documentId = match[1];
+					Debug.log(`✅ Extracted document ID: ${documentId}`);
+
+					// 缓存结果
+					this.documentIdCache.set(feishuUrl, documentId);
+					return documentId;
+				}
+			}
+
+			Debug.warn(`⚠️ Could not extract document ID from URL: ${feishuUrl}`);
+
+			// 缓存失败结果
+			this.documentIdCache.set(feishuUrl, null);
+			return null;
+
+		} catch (error) {
+			Debug.error('Extract document ID error:', error);
+
+			// 缓存失败结果
+			this.documentIdCache.set(feishuUrl, null);
+			return null;
+		}
+	}
+
+	/**
+	 * 检查文档访问权限
+	 * @param documentId 文档ID
+	 * @returns 权限检查结果
+	 */
+	async checkDocumentAccess(documentId: string): Promise<{hasAccess: boolean, error?: string, needsReauth?: boolean}> {
+		try {
+			Debug.log(`🔐 Checking document access: ${documentId}`);
+
+			// 确保token有效
+			const tokenValid = await this.ensureValidToken();
+			if (!tokenValid) {
+				return { hasAccess: false, error: 'Token无效，请重新授权', needsReauth: true };
+			}
+
+			// 尝试获取文档基本信息来验证访问权限
+			const response = await requestUrl({
+				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}`,
+				method: 'GET',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				}
+			});
+
+			const data = response.json || JSON.parse(response.text);
+
+			if (data.code === 0) {
+				Debug.log(`✅ Document access confirmed: ${documentId}`);
+				return { hasAccess: true };
+			} else if (data.code === 403) {
+				return { hasAccess: false, error: '没有访问该文档的权限' };
+			} else if (data.code === 404) {
+				return { hasAccess: false, error: '文档不存在或已被删除' };
+			} else if (data.code === 99991663) {
+				// Token失效的特定错误码
+				return { hasAccess: false, error: 'Token已失效', needsReauth: true };
+			} else {
+				return { hasAccess: false, error: data.msg || '文档访问检查失败' };
+			}
+
+		} catch (error) {
+			Debug.error('Check document access error:', error);
+			return {
+				hasAccess: false,
+				error: error instanceof Error ? error.message : '文档访问检查失败'
+			};
+		}
+	}
+
+	/**
+	 * 将内容复制到目标文档
+	 * @param sourceDocumentId 源文档ID
+	 * @param targetDocumentId 目标文档ID
+	 * @param localFiles 本地文件列表
+	 * @returns 复制操作结果
+	 */
+	async copyContentToDocument(
+		sourceDocumentId: string,
+		targetDocumentId: string,
+		localFiles: LocalFileInfo[]
+	): Promise<{success: boolean, error?: string}> {
+		try {
+			Debug.log(`📋 Copying content from ${sourceDocumentId} to ${targetDocumentId}`);
+
+			// 1. 获取源文档的所有块
+			const sourceBlocks = await this.getAllDocumentBlocks(sourceDocumentId);
+
+			// 2. 找到源文档的根块
+			const sourceRootBlock = sourceBlocks.find(block => block.block_type === 1); // 1 = page
+			if (!sourceRootBlock) {
+				throw new Error('源文档根块未找到');
+			}
+
+			// 3. 获取源文档根块的子块
+			const sourceChildren = sourceRootBlock.children || [];
+			if (sourceChildren.length === 0) {
+				Debug.log('📄 Source document has no content to copy');
+				return { success: true };
+			}
+
+			// 4. 获取目标文档的根块
+			const targetBlocks = await this.getAllDocumentBlocks(targetDocumentId);
+			const targetRootBlock = targetBlocks.find(block => block.block_type === 1);
+			if (!targetRootBlock) {
+				throw new Error('目标文档根块未找到');
+			}
+
+			Debug.log(`📋 Found ${sourceChildren.length} blocks to copy`);
+
+			// 5. 复制每个子块到目标文档
+			const copyResult = await this.copyBlocksToTarget(
+				sourceDocumentId,
+				targetDocumentId,
+				sourceChildren,
+				targetRootBlock.block_id
+			);
+
+			if (!copyResult.success) {
+				throw new Error(copyResult.error || '复制块失败');
+			}
+
+			Debug.log(`✅ Successfully copied ${sourceChildren.length} blocks to target document`);
+			return { success: true };
+
+		} catch (error) {
+			Debug.error('Copy content to document error:', error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : '复制文档内容失败'
+			};
+		}
+	}
+
+	/**
+	 * 复制块到目标文档
+	 * @param sourceDocumentId 源文档ID
+	 * @param targetDocumentId 目标文档ID
+	 * @param blockIds 要复制的块ID列表
+	 * @param targetParentId 目标父块ID
+	 * @returns 复制操作结果
+	 */
+	private async copyBlocksToTarget(
+		sourceDocumentId: string,
+		targetDocumentId: string,
+		blockIds: string[],
+		targetParentId: string
+	): Promise<{success: boolean, error?: string}> {
+		try {
+			Debug.log(`📋 Copying ${blockIds.length} blocks to target parent: ${targetParentId}`);
+
+			// 获取源文档的所有块数据
+			const sourceBlocks = await this.getAllDocumentBlocks(sourceDocumentId);
+			const blockMap = new Map(sourceBlocks.map(block => [block.block_id, block]));
+
+			// 按顺序复制每个块
+			for (let i = 0; i < blockIds.length; i++) {
+				const blockId = blockIds[i];
+				const sourceBlock = blockMap.get(blockId);
+
+				if (!sourceBlock) {
+					Debug.warn(`⚠️ Source block not found: ${blockId}`);
+					continue;
+				}
+
+				try {
+					// 在复制块之间添加延迟以避免频率限制
+					if (i > 0) {
+						const delay = 300; // 300ms延迟
+						Debug.verbose(`⏱️ Waiting ${delay}ms between block copies...`);
+						await new Promise(resolve => setTimeout(resolve, delay));
+					}
+
+					await this.copyIndividualBlock(sourceBlock, targetDocumentId, targetParentId);
+					Debug.log(`✅ Copied block ${i + 1}/${blockIds.length}: ${blockId}`);
+				} catch (blockError) {
+					Debug.error(`❌ Failed to copy block ${blockId}:`, blockError);
+					// 继续复制其他块，不中断整个流程
+				}
+			}
+
+			return { success: true };
+
+		} catch (error) {
+			Debug.error('Copy blocks to target error:', error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : '复制块到目标文档失败'
+			};
+		}
+	}
+
+	/**
+	 * 复制单个块到目标文档（支持重试和频率限制处理）
+	 * @param sourceBlock 源块数据
+	 * @param targetDocumentId 目标文档ID
+	 * @param targetParentId 目标父块ID
+	 */
+	private async copyIndividualBlock(
+		sourceBlock: any,
+		targetDocumentId: string,
+		targetParentId: string
+	): Promise<void> {
+		const maxRetries = 3;
+		let retryCount = 0;
+
+		while (retryCount < maxRetries) {
+			try {
+				// 构建块创建请求数据
+				const blockData = this.buildBlockDataForCopy(sourceBlock);
+
+				const requestData = {
+					children: [blockData]
+				};
+
+				Debug.verbose(`📝 Creating block in target document (attempt ${retryCount + 1}/${maxRetries}):`, {
+					type: sourceBlock.block_type,
+					targetParent: targetParentId
+				});
+
+				// 添加延迟以避免频率限制
+				if (retryCount > 0) {
+					const delay = Math.min(1000 * Math.pow(2, retryCount - 1), 5000); // 指数退避，最大5秒
+					Debug.verbose(`⏱️ Waiting ${delay}ms before retry...`);
+					await new Promise(resolve => setTimeout(resolve, delay));
+				}
+
+				const response = await requestUrl({
+					url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${targetDocumentId}/blocks/${targetParentId}/children`,
+					method: 'POST',
+					headers: {
+						'Authorization': `Bearer ${this.settings.accessToken}`,
+						'Content-Type': 'application/json'
+					},
+					body: JSON.stringify(requestData)
+				});
+
+				const data = response.json || JSON.parse(response.text);
+
+				if (data.code !== 0) {
+					throw new Error(data.msg || '创建块失败');
+				}
+
+				Debug.log(`✅ Successfully created block in target document`);
+				return; // 成功，退出重试循环
+
+			} catch (error) {
+				retryCount++;
+
+				// 检查是否是频率限制错误
+				if (error.message.includes('429') || error.message.includes('Request failed, status 429')) {
+					Debug.warn(`⚠️ Rate limit hit, retrying... (${retryCount}/${maxRetries})`);
+
+					if (retryCount >= maxRetries) {
+						Debug.error(`❌ Max retries reached for rate limit, giving up on block`);
+						throw new Error(`API频率限制，重试${maxRetries}次后仍失败: ${error.message}`);
+					}
+					// 继续重试
+				} else {
+					// 其他错误，直接抛出
+					Debug.error('Copy individual block error:', error);
+					throw error;
+				}
+			}
+		}
+	}
+
+	/**
+	 * 构建用于复制的块数据
+	 * @param sourceBlock 源块数据
+	 * @returns 用于创建的块数据
+	 */
+	private buildBlockDataForCopy(sourceBlock: any): any {
+		const blockType = sourceBlock.block_type;
+
+		// 根据块类型构建相应的数据结构
+		switch (blockType) {
+			case 2: // text
+				return {
+					block_type: 2,
+					text: sourceBlock.text || { elements: [{ text_run: { content: '' } }] }
+				};
+
+			case 3: // heading1
+			case 4: // heading2
+			case 5: // heading3
+			case 6: // heading4
+			case 7: // heading5
+			case 8: // heading6
+			case 9: // heading7
+			case 10: // heading8
+			case 11: // heading9
+				return {
+					block_type: blockType,
+					[this.getHeadingFieldName(blockType)]: sourceBlock[this.getHeadingFieldName(blockType)] || { elements: [{ text_run: { content: '' } }] }
+				};
+
+			case 12: // bullet
+				return {
+					block_type: 12,
+					bullet: sourceBlock.bullet || { elements: [{ text_run: { content: '' } }] }
+				};
+
+			case 13: // ordered
+				return {
+					block_type: 13,
+					ordered: sourceBlock.ordered || { elements: [{ text_run: { content: '' } }] }
+				};
+
+			case 14: // code
+				return {
+					block_type: 14,
+					code: sourceBlock.code || { elements: [{ text_run: { content: '' } }] }
+				};
+
+			case 15: // quote
+				return {
+					block_type: 15,
+					quote: sourceBlock.quote || { elements: [{ text_run: { content: '' } }] }
+				};
+
+			case 17: // todo
+				return {
+					block_type: 17,
+					todo: sourceBlock.todo || { elements: [{ text_run: { content: '' } }] }
+				};
+
+			default:
+				// 对于其他类型的块，尝试保持原始结构
+				Debug.warn(`⚠️ Unsupported block type for copy: ${blockType}`);
+				return {
+					block_type: 2, // 默认转为文本块
+					text: { elements: [{ text_run: { content: `[不支持的块类型: ${blockType}]` } }] }
+				};
+		}
+	}
+
+	/**
+	 * 获取标题块的字段名
+	 * @param blockType 块类型
+	 * @returns 字段名
+	 */
+	private getHeadingFieldName(blockType: number): string {
+		const headingMap: { [key: number]: string } = {
+			3: 'heading1',
+			4: 'heading2',
+			5: 'heading3',
+			6: 'heading4',
+			7: 'heading5',
+			8: 'heading6',
+			9: 'heading7',
+			10: 'heading8',
+			11: 'heading9'
+		};
+		return headingMap[blockType] || 'text';
+	}
+
+	/**
+	 * 更新现有飞书文档
+	 * @param feishuUrl 现有文档的飞书URL
+	 * @param title 文档标题
+	 * @param processResult Markdown处理结果
+	 * @param statusNotice 状态通知
+	 * @returns 更新结果
+	 */
+	async updateExistingDocument(
+		feishuUrl: string,
+		title: string,
+		processResult: MarkdownProcessResult,
+		statusNotice?: Notice
+	): Promise<ShareResult> {
+		let tempDocumentId: string | null = null;
+		let originalContentBackup: any[] | null = null;
+		let documentId: string | null = null;
+
+		try {
+			Debug.log(`🔄 Starting document update process for: ${feishuUrl}`);
+
+			if (statusNotice) {
+				statusNotice.setMessage('🔍 正在解析文档链接...');
+			}
+
+			// 1. 从URL提取文档ID
+			documentId = this.extractDocumentIdFromUrl(feishuUrl);
+			if (!documentId) {
+				throw new Error('无法从URL中提取文档ID，请检查链接格式是否正确');
+			}
+
+			// 2. 跳过重复的访问权限检查（在主流程中已经检查过）
+			Debug.verbose(`📋 Skipping duplicate access check for document: ${documentId}`);
+			if (statusNotice) {
+				statusNotice.setMessage('💾 正在备份原始文档内容...');
+			}
+
+			// 3. 备份原始内容（用于回滚）
+			if (statusNotice) {
+				statusNotice.setMessage('💾 正在备份原始文档内容...');
+			}
+
+			try {
+				originalContentBackup = await this.getAllDocumentBlocks(documentId);
+				Debug.log(`✅ Original content backed up: ${originalContentBackup.length} blocks`);
+			} catch (backupError) {
+				Debug.warn('⚠️ Failed to backup original content:', backupError);
+				// 继续执行，但记录警告
+			}
+
+			// 4. 创建临时文档用于导入新内容
+			if (statusNotice) {
+				statusNotice.setMessage('📄 正在创建临时文档...');
+			}
+
+			const tempResult = await this.shareMarkdownWithFiles(title + '_temp', processResult, statusNotice);
+			if (!tempResult.success) {
+				throw new Error(tempResult.error || '创建临时文档失败');
+			}
+
+			// 5. 提取临时文档ID
+			tempDocumentId = this.extractDocumentIdFromUrl(tempResult.url!);
+			if (!tempDocumentId) {
+				throw new Error('无法从临时文档URL中提取文档ID');
+			}
+
+			Debug.log(`✅ Temporary document created: ${tempDocumentId}`);
+
+			// 6. 清空现有文档内容
+			if (statusNotice) {
+				statusNotice.setMessage('🧹 正在清空现有文档内容...');
+			}
+
+			const clearResult = await this.clearDocumentContent(documentId);
+			if (!clearResult.success) {
+				throw new Error(clearResult.error || '清空文档内容失败');
+			}
+
+			// 7. 复制临时文档内容到目标文档
+			if (statusNotice) {
+				statusNotice.setMessage('📋 正在复制内容到目标文档...');
+			}
+
+			const copyResult = await this.copyContentToDocument(
+				tempDocumentId,
+				documentId,
+				processResult.localFiles
+			);
+
+			if (!copyResult.success) {
+				throw new Error(copyResult.error || '复制内容失败');
+			}
+
+			// 8. 处理本地文件上传（如果有）
+			if (processResult.localFiles.length > 0) {
+				if (statusNotice) {
+					statusNotice.setMessage(`📎 正在处理 ${processResult.localFiles.length} 个本地文件...`);
+				}
+
+				try {
+					await this.processFileUploads(documentId, processResult.localFiles, statusNotice);
+				} catch (fileError) {
+					Debug.warn('⚠️ File upload failed, but document content was updated:', fileError);
+					// 文件上传失败不影响主要内容更新
+				}
+			}
+
+			// 9. 删除临时文档
+			try {
+				if (statusNotice) {
+					statusNotice.setMessage('🗑️ 正在清理临时文档...');
+				}
+				await this.deleteDocument(tempDocumentId);
+				tempDocumentId = null; // 标记已删除
+				Debug.log('✅ Temporary document deleted successfully');
+			} catch (deleteError) {
+				Debug.warn('⚠️ Failed to delete temporary document:', deleteError);
+				// 不影响主流程，只记录警告
+			}
+
+			Debug.log(`✅ Document update completed successfully: ${feishuUrl}`);
+
+			return {
+				success: true,
+				url: feishuUrl, // 返回原始URL
+				title: title
+			};
+
+		} catch (error) {
+			Debug.error('Update existing document error:', error);
+
+			// 错误处理和回滚逻辑
+			await this.handleUpdateError(error, documentId, tempDocumentId, originalContentBackup, statusNotice);
+
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : '更新文档失败'
+			};
+		}
+	}
+
+	/**
+	 * 处理更新错误和回滚
+	 * @param error 错误对象
+	 * @param documentId 目标文档ID
+	 * @param tempDocumentId 临时文档ID
+	 * @param originalContentBackup 原始内容备份
+	 * @param statusNotice 状态通知
+	 */
+	private async handleUpdateError(
+		error: any,
+		documentId: string | null,
+		tempDocumentId: string | null,
+		originalContentBackup: any[] | null,
+		statusNotice?: Notice
+	): Promise<void> {
+		try {
+			Debug.log('🔄 Starting error handling and rollback process...');
+
+			// 1. 清理临时文档
+			if (tempDocumentId) {
+				try {
+					if (statusNotice) {
+						statusNotice.setMessage('🗑️ 正在清理临时文档...');
+					}
+					await this.deleteDocument(tempDocumentId);
+					Debug.log('✅ Temporary document cleaned up');
+				} catch (cleanupError) {
+					Debug.warn('⚠️ Failed to cleanup temporary document:', cleanupError);
+				}
+			}
+
+			// 2. 尝试回滚原始内容（如果有备份且文档ID有效）
+			if (documentId && originalContentBackup && originalContentBackup.length > 0) {
+				try {
+					if (statusNotice) {
+						statusNotice.setMessage('🔄 正在尝试回滚到原始内容...');
+					}
+
+					const rollbackResult = await this.rollbackDocumentContent(documentId, originalContentBackup);
+					if (rollbackResult.success) {
+						Debug.log('✅ Successfully rolled back to original content');
+						if (statusNotice) {
+							statusNotice.setMessage('✅ 已回滚到原始内容');
+						}
+					} else {
+						Debug.warn('⚠️ Failed to rollback content:', rollbackResult.error);
+					}
+				} catch (rollbackError) {
+					Debug.error('❌ Rollback failed:', rollbackError);
+				}
+			}
+
+			// 3. 记录详细错误信息
+			Debug.error('📋 Update error details:', {
+				originalError: error,
+				documentId,
+				tempDocumentId,
+				hasBackup: !!originalContentBackup,
+				backupSize: originalContentBackup?.length || 0
+			});
+
+		} catch (handlerError) {
+			Debug.error('❌ Error in error handler:', handlerError);
+		}
+	}
+
+	/**
+	 * 回滚文档内容
+	 * @param documentId 文档ID
+	 * @param originalContent 原始内容备份
+	 * @returns 回滚结果
+	 */
+	private async rollbackDocumentContent(
+		documentId: string,
+		originalContent: any[]
+	): Promise<{success: boolean, error?: string}> {
+		try {
+			Debug.log(`🔄 Rolling back document content: ${originalContent.length} blocks`);
+
+			// 注意：这是一个简化的回滚实现
+			// 在实际生产环境中，可能需要更复杂的逻辑来完全恢复文档结构
+
+			// 1. 清空当前内容
+			const clearResult = await this.clearDocumentContent(documentId);
+			if (!clearResult.success) {
+				throw new Error(clearResult.error || '清空文档失败');
+			}
+
+			// 2. 重建内容（简化版本 - 只恢复文本内容）
+			const rootBlock = originalContent.find(block => block.block_type === 1);
+			if (!rootBlock || !rootBlock.children || rootBlock.children.length === 0) {
+				Debug.log('📄 No content to restore');
+				return { success: true };
+			}
+
+			// 创建基本的文本块来恢复内容
+			const restoreBlocks = originalContent
+				.filter(block => rootBlock.children.includes(block.block_id))
+				.map(block => this.buildBlockDataForCopy(block));
+
+			if (restoreBlocks.length > 0) {
+				const requestData = { children: restoreBlocks };
+
+				const response = await requestUrl({
+					url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${rootBlock.block_id}/children`,
+					method: 'POST',
+					headers: {
+						'Authorization': `Bearer ${this.settings.accessToken}`,
+						'Content-Type': 'application/json'
+					},
+					body: JSON.stringify(requestData)
+				});
+
+				const data = response.json || JSON.parse(response.text);
+				if (data.code !== 0) {
+					throw new Error(data.msg || '恢复内容失败');
+				}
+			}
+
+			Debug.log(`✅ Successfully rolled back ${restoreBlocks.length} blocks`);
+			return { success: true };
+
+		} catch (error) {
+			Debug.error('Rollback document content error:', error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : '回滚失败'
+			};
+		}
+	}
+
+	/**
+	 * 删除文档
+	 * @param documentId 文档ID
+	 */
+	async deleteDocument(documentId: string): Promise<void> {
+		try {
+			Debug.log(`🗑️ Starting to delete document: ${documentId}`);
+
+			// 确保token有效
+			const tokenValid = await this.ensureValidToken();
+			if (!tokenValid) {
+				throw new Error('Token无效，无法删除文档');
+			}
+
+			// 构建删除API URL，添加type参数指定为docx类型
+			const deleteUrl = `${FEISHU_CONFIG.BASE_URL}/drive/v1/files/${documentId}?type=docx`;
+
+			Debug.log(`🔗 Delete API URL: ${deleteUrl}`);
+			Debug.log(`🔑 Using access token: ${this.settings.accessToken ? this.settings.accessToken.substring(0, 10) + '...' : 'null'}`);
+
+			const response = await requestUrl({
+				url: deleteUrl,
+				method: 'DELETE',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				}
+			});
+
+			Debug.log(`📡 Delete response status: ${response.status}`);
+
+			// 只记录关键的响应头信息，避免日志过于冗长
+			const keyHeaders = {
+				'content-type': response.headers['content-type'],
+				'request-id': response.headers['request-id'],
+				'x-tt-logid': response.headers['x-tt-logid']
+			};
+			Debug.verbose(`📡 Delete response headers (key):`, keyHeaders);
+
+			let data: any;
+			try {
+				data = response.json || JSON.parse(response.text);
+				Debug.log(`📡 Delete response:`, {
+					code: data.code,
+					msg: data.msg,
+					success: data.code === 0
+				});
+			} catch (parseError) {
+				Debug.log(`📡 Delete response text:`, response.text);
+				throw new Error(`解析删除响应失败: ${parseError.message}`);
+			}
+
+			if (data.code !== 0) {
+				Debug.error(`❌ Delete failed with code ${data.code}: ${data.msg}`);
+				throw new Error(`删除文档失败 (${data.code}): ${data.msg || '未知错误'}`);
+			}
+
+			Debug.log(`✅ Document deleted successfully: ${documentId}`);
+
+			// 如果返回了task_id，说明是异步删除
+			if (data.data && data.data.task_id) {
+				Debug.log(`📋 Async delete task created: ${data.data.task_id}`);
+			}
+
+		} catch (error) {
+			Debug.error('Delete document error details:', {
+				documentId,
+				error: error.message,
+				stack: error.stack
+			});
+			throw error;
+		}
+	}
+
+
 
 	/**
 	 * 验证文档链接分享是否生效
