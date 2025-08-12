@@ -395,7 +395,8 @@ export class MarkdownProcessor {
 	private generatePlaceholder(): string {
 		const timestamp = Date.now();
 		const randomId = Math.random().toString(36).substring(2, 8);
-		return `__FEISHU_FILE_${timestamp}_${randomId}__`;
+		// 使用更抽象的标识符，避免文件相关关键词被飞书误识别
+		return `__OB_CONTENT_${timestamp}_${randomId}__`;
 	}
 
 	/**

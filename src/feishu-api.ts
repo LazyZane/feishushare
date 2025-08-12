@@ -17,17 +17,72 @@ import { Debug } from './debug';
 import { MarkdownProcessor } from './markdown-processor';
 
 /**
+ * 智能频率控制器
+ * 用于控制API调用频率，避免触发飞书的频率限制
+ */
+class RateLimitController {
+	private lastCallTime: number = 0;
+	private callCount: number = 0;
+	private resetTime: number = 0;
+
+	/**
+	 * 智能节流控制
+	 * @param apiType API类型，不同类型有不同的频率限制
+	 */
+	async throttle(apiType: 'document' | 'import' | 'block'): Promise<void> {
+		const limits = {
+			document: { perSecond: 2, perMinute: 90 }, // 保守一些，避免触发限制
+			import: { perSecond: 1, perMinute: 90 },
+			block: { perSecond: 2, perMinute: 150 }
+		};
+
+		const limit = limits[apiType];
+		const now = Date.now();
+
+		// 重置计数器（每分钟）
+		if (now - this.resetTime > 60000) {
+			this.callCount = 0;
+			this.resetTime = now;
+		}
+
+		// 检查每分钟限制
+		if (this.callCount >= limit.perMinute) {
+			const waitTime = 60000 - (now - this.resetTime);
+			Debug.log(`⏳ Rate limit reached, waiting ${waitTime}ms...`);
+			await new Promise(resolve => setTimeout(resolve, waitTime));
+			this.callCount = 0;
+			this.resetTime = Date.now();
+		}
+
+		// 检查每秒限制
+		const timeSinceLastCall = now - this.lastCallTime;
+		const minInterval = 1000 / limit.perSecond;
+
+		if (timeSinceLastCall < minInterval) {
+			const waitTime = minInterval - timeSinceLastCall;
+			await new Promise(resolve => setTimeout(resolve, waitTime));
+		}
+
+		this.lastCallTime = Date.now();
+		this.callCount++;
+	}
+}
+
+/**
  * 飞书 API 服务类 - 直接实现版本
  */
 export class FeishuApiService {
 	private settings: FeishuSettings;
 	private app: App;
 	private markdownProcessor: MarkdownProcessor;
+	private rateLimitController: RateLimitController;
+	private refreshPromise: Promise<boolean> | null = null; // 防止并发刷新
 
 	constructor(settings: FeishuSettings, app: App) {
 		this.settings = settings;
 		this.app = app;
 		this.markdownProcessor = new MarkdownProcessor(app);
+		this.rateLimitController = new RateLimitController();
 	}
 
 	/**
@@ -52,12 +107,14 @@ export class FeishuApiService {
 		const redirectUri = this.settings.callbackUrl;
 
 		const params = new URLSearchParams({
-			app_id: this.settings.appId,
+			client_id: this.settings.appId,
 			redirect_uri: redirectUri,
 			scope: FEISHU_CONFIG.SCOPES,
 			state: state,
 			response_type: 'code',
 		});
+
+
 
 		const authUrl = `${FEISHU_CONFIG.AUTHORIZE_URL}?${params.toString()}`;
 		return authUrl;
@@ -137,45 +194,43 @@ export class FeishuApiService {
 	}
 
 	/**
-	 * 使用授权码换取访问令牌
+	 * 使用授权码换取访问令牌（v2 API）
 	 */
 	private async exchangeCodeForToken(code: string): Promise<{success: boolean, error?: string}> {
 		try {
-			// 方案1：尝试使用应用凭证获取app_access_token，然后用于OAuth
-			const appTokenResponse = await requestUrl({
-				url: 'https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal',
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify({
-					app_id: this.settings.appId,
-					app_secret: this.settings.appSecret
-				})
-			});
-
-			const appTokenData = appTokenResponse.json || JSON.parse(appTokenResponse.text);
-			if (appTokenData.code !== 0) {
-				Debug.error('Failed to get app access token:', appTokenData);
-				return { success: false, error: `获取应用令牌失败: ${appTokenData.msg}` };
-			}
-
-			const appAccessToken = appTokenData.app_access_token;
-			// 方案2：使用app_access_token进行用户授权码交换
+			// 使用v2 API直接交换token
 			const requestBody = {
 				grant_type: 'authorization_code',
-				code: code
+				client_id: this.settings.appId,
+				client_secret: this.settings.appSecret,
+				code: code,
+				redirect_uri: this.settings.callbackUrl  // 必须与授权时使用的redirect_uri一致
 			};
 
-			const response = await requestUrl({
-				url: FEISHU_CONFIG.TOKEN_URL,
-				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					'Authorization': `Bearer ${appAccessToken}`
-				},
-				body: JSON.stringify(requestBody)
-			});
+
+
+			let response: any;
+			try {
+				response = await requestUrl({
+					url: FEISHU_CONFIG.TOKEN_URL,
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json'
+					},
+					body: JSON.stringify(requestBody)
+				});
+			} catch (httpError) {
+				Debug.error('❌ HTTP request failed:', httpError);
+
+				// 尝试从错误中提取响应信息
+				if (httpError.response) {
+					Debug.error('Error response status:', httpError.response.status);
+					Debug.error('Error response headers:', httpError.response.headers);
+					Debug.error('Error response body:', httpError.response.body);
+				}
+
+				throw httpError;
+			}
 
 			// 尝试不同的方式获取响应数据
 			let data: FeishuOAuthResponse;
@@ -186,6 +241,7 @@ export class FeishuApiService {
 				} else if (response.text) {
 				// 如果有text属性，解析JSON
 				const responseText = response.text;
+
 				data = JSON.parse(responseText);
 			} else {
 				// 尝试调用json()方法
@@ -194,16 +250,40 @@ export class FeishuApiService {
 			}
 
 			if (data.code === 0) {
-				this.settings.accessToken = data.data.access_token;
-				this.settings.refreshToken = data.data.refresh_token;
-				return { success: true };
+				// 支持v1和v2 API格式
+				const accessToken = data.access_token || data.data?.access_token;
+				const refreshToken = data.refresh_token || data.data?.refresh_token;
+
+				if (accessToken) {
+					this.settings.accessToken = accessToken;
+					this.settings.refreshToken = refreshToken || '';
+					return { success: true };
+				} else {
+					Debug.error('❌ No access token in response:', data);
+					return { success: false, error: 'No access token received' };
+				}
 			} else {
-				Debug.error('Token exchange failed:', data);
-				return { success: false, error: data.msg };
+				Debug.error('❌ Token exchange failed:', data);
+				return { success: false, error: data.error_description || data.msg || `Error code: ${data.code}` };
 			}
 
 		} catch (error) {
 			Debug.error('Token exchange error:', error);
+
+			// 尝试获取更详细的错误信息
+			if (error.response) {
+				Debug.error('Error response status:', error.response.status);
+				Debug.error('Error response data:', error.response.data);
+			}
+
+			// 如果是requestUrl的错误，尝试解析响应
+			if (error.message && error.message.includes('Request failed, status 400')) {
+				Debug.error('400 Bad Request - checking request format...');
+				Debug.error('Request URL:', FEISHU_CONFIG.TOKEN_URL);
+				Debug.error('App ID:', this.settings.appId ? 'Present' : 'Missing');
+				Debug.error('App Secret:', this.settings.appSecret ? 'Present' : 'Missing');
+			}
+
 			return { success: false, error: error.message };
 		}
 	}
@@ -244,8 +324,9 @@ export class FeishuApiService {
 
 	/**
 	 * 分享 Markdown 到飞书（带文件处理的完整流程）
+	 * @param isTemporary 是否为临时文档（临时文档不删除源文件）
 	 */
-	async shareMarkdownWithFiles(title: string, processResult: MarkdownProcessResult, statusNotice?: Notice): Promise<ShareResult> {
+	async shareMarkdownWithFiles(title: string, processResult: MarkdownProcessResult, statusNotice?: Notice, isTemporary: boolean = false): Promise<ShareResult> {
 		try {
 			// 更新状态：检查授权
 			if (statusNotice) {
@@ -255,7 +336,13 @@ export class FeishuApiService {
 			// 检查并确保token有效
 			const tokenValid = await this.ensureValidTokenWithReauth(statusNotice);
 			if (!tokenValid) {
-				throw new Error('授权失效且重新授权失败，请手动重新授权');
+				// 提供更友好的错误信息和指导
+				const errorMsg = '授权未完成。请点击分享按钮重新尝试，并确保在浏览器中完成授权流程。';
+				if (statusNotice) {
+					statusNotice.setMessage(`❌ ${errorMsg}`);
+					setTimeout(() => statusNotice.hide(), 8000);
+				}
+				throw new Error(errorMsg);
 			}
 
 			// 更新状态：开始上传
@@ -344,26 +431,30 @@ export class FeishuApiService {
 							}
 						}
 
-						// 第六步：删除源文件（转换成功后）
-						try {
-							await this.deleteSourceFile(uploadResult.fileToken);
-						} catch (deleteError) {
-							Debug.warn('⚠️ Failed to delete source file:', deleteError.message);
-							// 不影响主流程，继续返回成功结果
-						}
+						// 第六步：源文件自动删除
+						// 注意：使用素材上传API，导入完成后源文件会自动被删除
+						Debug.log(`📝 Source file will be automatically deleted by Feishu after import: ${uploadResult.fileToken}`);
 
-						return {
+						const result = {
 							success: true,
 							title: cleanTitle,
-							url: docUrl
+							url: docUrl,
+							sourceFileToken: isTemporary ? uploadResult.fileToken : undefined
 						};
+
+						if (isTemporary && uploadResult.fileToken) {
+							Debug.log(`📝 Returning source file token for temporary document: ${uploadResult.fileToken}`);
+						}
+
+						return result;
 					} else {
 						Debug.warn('⚠️ Import task failed or timed out, falling back to file URL');
 						Debug.warn('Final result details:', finalResult);
 						return {
 							success: true,
 							title: title,
-							url: fallbackFileUrl
+							url: fallbackFileUrl,
+							sourceFileToken: isTemporary ? uploadResult.fileToken : undefined
 						};
 					}
 				} else {
@@ -372,7 +463,8 @@ export class FeishuApiService {
 					return {
 						success: true,
 						title: title,
-						url: fallbackFileUrl
+						url: fallbackFileUrl,
+						sourceFileToken: isTemporary ? uploadResult.fileToken : undefined
 					};
 				}
 			} catch (importError) {
@@ -381,7 +473,8 @@ export class FeishuApiService {
 				return {
 					success: true,
 					title: title,
-					url: fallbackFileUrl
+					url: fallbackFileUrl,
+					sourceFileToken: isTemporary ? uploadResult.fileToken : undefined
 				};
 			}
 
@@ -407,7 +500,13 @@ export class FeishuApiService {
 			// 检查并确保token有效
 			const tokenValid = await this.ensureValidTokenWithReauth(statusNotice);
 			if (!tokenValid) {
-				throw new Error('授权失效且重新授权失败，请手动重新授权');
+				// 提供更友好的错误信息和指导
+				const errorMsg = '授权未完成。请点击分享按钮重新尝试，并确保在浏览器中完成授权流程。';
+				if (statusNotice) {
+					statusNotice.setMessage(`❌ ${errorMsg}`);
+					setTimeout(() => statusNotice.hide(), 8000);
+				}
+				throw new Error(errorMsg);
 			}
 
 			// 更新状态：开始上传
@@ -467,16 +566,8 @@ export class FeishuApiService {
 							parallelTasks.push(permissionTask);
 						}
 
-						// 源文件删除任务
-						const deleteTask = (async () => {
-							try {
-								await this.deleteSourceFile(uploadResult.fileToken!);
-							} catch (deleteError) {
-								Debug.warn('⚠️ Failed to delete source file:', deleteError);
-								// 不影响主流程，继续返回成功结果
-							}
-						})();
-						parallelTasks.push(deleteTask);
+						// 源文件自动删除（素材上传API特性）
+						Debug.log(`📝 Source file will be automatically deleted by Feishu: ${uploadResult.fileToken}`);
 
 						// 等待所有并行任务完成
 						await Promise.allSettled(parallelTasks);
@@ -607,11 +698,11 @@ export class FeishuApiService {
 			parts.push('');
 			parts.push(finalFileName);
 
-			// 2. parent_type
+			// 2. parent_type (素材上传API使用固定值)
 			parts.push(`--${boundary}`);
 			parts.push(`Content-Disposition: form-data; name="parent_type"`);
 			parts.push('');
-			parts.push('explorer');
+			parts.push('ccm_import_open');
 
 			// 3. size (使用UTF-8字节长度)
 			parts.push(`--${boundary}`);
@@ -619,16 +710,11 @@ export class FeishuApiService {
 			parts.push('');
 			parts.push(contentLength.toString());
 
-			// 4. parent_node (如果有)
-			if (this.settings.defaultFolderId && this.settings.defaultFolderId !== '' && this.settings.defaultFolderId !== 'nodcn2EG5YG1i5Rsh5uZs0FsUje') {
-				parts.push(`--${boundary}`);
-				parts.push(`Content-Disposition: form-data; name="parent_node"`);
-				parts.push('');
-				parts.push(this.settings.defaultFolderId);
-				// 使用自定义文件夹
-			} else {
-				// 使用根文件夹
-			}
+			// 4. extra (素材上传API必需参数)
+			parts.push(`--${boundary}`);
+			parts.push(`Content-Disposition: form-data; name="extra"`);
+			parts.push('');
+			parts.push('{"obj_type":"docx","file_extension":"md"}');
 
 			// 5. file (最后)
 			parts.push(`--${boundary}`);
@@ -694,13 +780,45 @@ export class FeishuApiService {
 	}
 
 	/**
-	 * 刷新访问令牌
+	 * 刷新访问令牌（带并发保护）
 	 */
 	async refreshAccessToken(): Promise<boolean> {
+		// 如果已有刷新请求在进行中，等待其完成
+		if (this.refreshPromise) {
+			Debug.log('🔄 Refresh already in progress, waiting...');
+			return await this.refreshPromise;
+		}
+
+		// 创建新的刷新Promise
+		this.refreshPromise = this.doRefreshAccessToken();
+
+		try {
+			const result = await this.refreshPromise;
+			return result;
+		} finally {
+			// 清除Promise，允许下次刷新
+			this.refreshPromise = null;
+		}
+	}
+
+	/**
+	 * 实际执行刷新的方法
+	 */
+	private async doRefreshAccessToken(): Promise<boolean> {
 		try {
 			if (!this.settings.refreshToken) {
+				Debug.error('❌ No refresh token available');
 				return false;
 			}
+
+			Debug.log('🔄 Attempting token refresh...');
+
+			const requestBody = {
+				grant_type: 'refresh_token',
+				client_id: this.settings.appId,
+				client_secret: this.settings.appSecret,
+				refresh_token: this.settings.refreshToken
+			};
 
 			const response = await requestUrl({
 				url: FEISHU_CONFIG.REFRESH_TOKEN_URL,
@@ -708,25 +826,49 @@ export class FeishuApiService {
 				headers: {
 					'Content-Type': 'application/json',
 				},
-				body: JSON.stringify({
-					grant_type: 'refresh_token',
-					refresh_token: this.settings.refreshToken
-				})
+				body: JSON.stringify(requestBody)
 			});
 
+			Debug.log('📋 Refresh response status:', response.status);
+
 			const data: FeishuOAuthResponse = response.json || JSON.parse(response.text);
+			Debug.log('📋 Refresh response data:', data);
 
 			if (data.code === 0) {
-				this.settings.accessToken = data.data.access_token;
-				this.settings.refreshToken = data.data.refresh_token;
-				return true;
+				// 支持v1和v2 API格式
+				const accessToken = data.access_token || data.data?.access_token;
+				const refreshToken = data.refresh_token || data.data?.refresh_token;
+
+				if (accessToken) {
+					this.settings.accessToken = accessToken;
+					this.settings.refreshToken = refreshToken || '';
+
+					Debug.log('✅ Token refresh successful, tokens updated');
+					return true;
+				} else {
+					Debug.error('❌ No access token in refresh response:', data);
+					return false;
+				}
 			} else {
-				Debug.error('Token refresh failed:', data);
+				Debug.error('❌ Token refresh failed with code:', data.code);
+				Debug.error('❌ Error message:', data.msg || data.error_description || 'Unknown error');
+				Debug.error('❌ Full response:', data);
 				return false;
 			}
 
 		} catch (error) {
-			Debug.error('Token refresh error:', error);
+			Debug.error('❌ Token refresh error:', error);
+
+			// 尝试从错误中提取更多信息
+			if (error.message && error.message.includes('Request failed, status 400')) {
+				Debug.error('❌ 400 Bad Request - Refresh token is invalid or expired');
+				Debug.error('💡 Solution: Clear authorization in settings and re-authorize');
+
+				// 自动清除无效的refresh_token，避免重复尝试
+				this.settings.refreshToken = '';
+				Debug.log('🧹 Cleared invalid refresh token');
+			}
+
 			return false;
 		}
 	}
@@ -761,8 +903,9 @@ export class FeishuApiService {
 
 			if (data.code === 0) {
 				return true;
-			} else if (data.code === 99991664) {
+			} else if (this.isTokenExpiredError(data.code)) {
 				// Token过期，尝试刷新
+				Debug.log(`⚠️ Token expired (code: ${data.code}), attempting refresh`);
 				return await this.refreshAccessToken();
 			} else {
 				return false;
@@ -778,8 +921,15 @@ export class FeishuApiService {
 	 * 增强的token验证，支持自动重新授权
 	 */
 	async ensureValidTokenWithReauth(statusNotice?: Notice): Promise<boolean> {
+		Debug.log('🔍 Starting token validation with reauth support');
+
 		if (!this.settings.accessToken) {
-			return await this.triggerReauth('没有访问令牌', statusNotice);
+			Debug.log('❌ No access token available, triggering reauth');
+			// 对于手动清除授权的情况，提供更友好的提示
+			if (statusNotice) {
+				statusNotice.setMessage('🔑 检测到需要重新授权，正在自动打开授权页面...');
+			}
+			return await this.triggerReauth('需要重新授权', statusNotice);
 		}
 
 		// 测试当前token是否有效
@@ -795,25 +945,34 @@ export class FeishuApiService {
 			const data = response.json || JSON.parse(response.text);
 
 			if (data.code === 0) {
+				Debug.log('✅ Token is valid');
 				return true;
 			} else if (this.isTokenExpiredError(data.code)) {
+				Debug.log(`⚠️ Token expired (code: ${data.code}), attempting refresh`);
 				// Token过期，尝试刷新
 				const refreshSuccess = await this.refreshAccessToken();
 
 				if (refreshSuccess) {
+					Debug.log('✅ Token refreshed successfully');
 					return true;
 				} else {
+					Debug.log('❌ Token refresh failed, triggering reauth');
 					const reauthSuccess = await this.triggerReauth('Token刷新失败', statusNotice);
 					if (reauthSuccess) {
+						Debug.log('✅ Reauth completed successfully');
 						return true;
 					}
+					Debug.log('❌ Reauth failed');
 					return false;
 				}
 			} else {
+				Debug.log(`❌ Token invalid (code: ${data.code}), triggering reauth`);
 				const reauthSuccess = await this.triggerReauth(`Token无效 (错误码: ${data.code})`, statusNotice);
 				if (reauthSuccess) {
+					Debug.log('✅ Reauth completed successfully');
 					return true;
 				}
+				Debug.log('❌ Reauth failed');
 				return false;
 			}
 
@@ -837,7 +996,8 @@ export class FeishuApiService {
 			99991663, // access_token invalid
 			99991665, // refresh_token expired
 			99991666, // refresh_token invalid
-			1, // 通用的无效token错误
+			20005,    // 另一种token无效错误码
+			1,        // 通用的无效token错误
 		];
 		return expiredCodes.includes(code);
 	}
@@ -873,13 +1033,26 @@ export class FeishuApiService {
 
 			// 更新状态：等待授权
 			if (statusNotice) {
-				statusNotice.setMessage('🌐 已打开浏览器进行重新授权，完成后将自动继续分享...');
+				statusNotice.setMessage('🌐 已打开浏览器进行授权，请在浏览器中完成授权后返回...');
 			} else {
-				new Notice('🌐 已打开浏览器进行重新授权，完成后将自动继续分享...');
+				new Notice('🌐 已打开浏览器进行授权，请在浏览器中完成授权后返回...');
 			}
 
 			// 等待授权完成
-			return await this.waitForReauth(statusNotice);
+			const authResult = await this.waitForReauth(statusNotice);
+
+			if (!authResult) {
+				// 授权失败或超时，提供更友好的错误信息
+				const retryMsg = '⏰ 授权超时或失败。请确保在浏览器中完成授权，然后重新尝试分享。';
+				if (statusNotice) {
+					statusNotice.setMessage(retryMsg);
+					setTimeout(() => statusNotice.hide(), 5000);
+				} else {
+					new Notice(retryMsg);
+				}
+			}
+
+			return authResult;
 
 		} catch (error) {
 			Debug.error('重新授权失败:', error);
@@ -932,6 +1105,9 @@ export class FeishuApiService {
 	 */
 	private async createImportTaskWithCorrectFolder(fileToken: string, title: string): Promise<{success: boolean, ticket?: string, error?: string}> {
 		try {
+			// 应用频率控制
+			await this.rateLimitController.throttle('import');
+
 			// 使用正确的point格式（与成功版本一致）
 			const importData = {
 				file_extension: 'md',
@@ -1079,6 +1255,9 @@ export class FeishuApiService {
 	 */
 	private async checkImportStatus(ticket: string): Promise<{success: boolean, status?: number, documentToken?: string, error?: string}> {
 		try {
+			// 应用频率控制
+			await this.rateLimitController.throttle('import');
+
 			const response = await requestUrl({
 				url: `${FEISHU_CONFIG.BASE_URL}/drive/v1/import_tasks/${ticket}`,
 				method: 'GET',
@@ -1113,6 +1292,10 @@ export class FeishuApiService {
 			};
 		}
 	}
+
+
+
+
 
 	/**
 	 * 删除源文件（改进版本）
@@ -1395,7 +1578,8 @@ export class FeishuApiService {
 	 */
 	private hasPlaceholderFeatures(content: string): boolean {
 		// 快速检查是否包含占位符的特征字符串
-		return content.includes('FEISHU_FILE_') || content.includes('__FEISHU_FILE_');
+		return content.includes('OB_CONTENT_') || content.includes('__OB_CONTENT_') ||
+		       content.includes('FEISHU_FILE_') || content.includes('__FEISHU_FILE_'); // 保持向后兼容
 	}
 
 	/**
@@ -2406,79 +2590,7 @@ export class FeishuApiService {
 		}
 	}
 
-	/**
-	 * 更新文档内容（简化版本，用于子文档更新）
-	 * @param documentId 文档ID
-	 * @param processResult Markdown处理结果
-	 * @param statusNotice 状态通知
-	 */
-	private async updateDocumentContent(
-		documentId: string,
-		processResult: MarkdownProcessResult,
-		statusNotice?: Notice
-	): Promise<void> {
-		try {
-			Debug.log(`🔄 Updating document content: ${documentId}`);
 
-			// 1. 清空现有文档内容
-			if (statusNotice) {
-				statusNotice.setMessage('🧹 正在清空子文档内容...');
-			}
-
-			const clearResult = await this.clearDocumentContent(documentId);
-			if (!clearResult.success) {
-				throw new Error(clearResult.error || '清空文档内容失败');
-			}
-
-			// 2. 创建临时文档用于导入新内容
-			if (statusNotice) {
-				statusNotice.setMessage('📄 正在创建临时文档...');
-			}
-
-			const tempResult = await this.shareMarkdownWithFiles('temp_subdoc_' + Date.now(), processResult, statusNotice);
-			if (!tempResult.success) {
-				throw new Error(tempResult.error || '创建临时文档失败');
-			}
-
-			// 3. 提取临时文档ID
-			const tempDocumentId = this.extractDocumentIdFromUrl(tempResult.url!);
-			if (!tempDocumentId) {
-				throw new Error('无法从临时文档URL中提取文档ID');
-			}
-
-			try {
-				// 4. 复制临时文档内容到目标文档
-				if (statusNotice) {
-					statusNotice.setMessage('📋 正在复制内容到子文档...');
-				}
-
-				const copyResult = await this.copyContentToDocument(
-					tempDocumentId,
-					documentId,
-					processResult.localFiles
-				);
-
-				if (!copyResult.success) {
-					throw new Error(copyResult.error || '复制内容失败');
-				}
-
-				Debug.log(`✅ Sub-document content updated successfully: ${documentId}`);
-
-			} finally {
-				// 5. 删除临时文档
-				try {
-					await this.deleteDocument(tempDocumentId);
-					Debug.log('✅ Temporary sub-document deleted successfully');
-				} catch (deleteError) {
-					Debug.warn('⚠️ Failed to delete temporary sub-document:', deleteError);
-				}
-			}
-
-		} catch (error) {
-			Debug.error('Update document content error:', error);
-			throw error;
-		}
-	}
 
 	/**
 	 * 上传子文档到飞书
@@ -3095,48 +3207,85 @@ export class FeishuApiService {
 	 * @returns 权限检查结果
 	 */
 	async checkDocumentAccess(documentId: string): Promise<{hasAccess: boolean, error?: string, needsReauth?: boolean}> {
-		try {
-			Debug.log(`🔐 Checking document access: ${documentId}`);
+		// 尝试访问文档，如果失败则尝试刷新Token后重试
+		for (let attempt = 1; attempt <= 2; attempt++) {
+			try {
+				Debug.log(`🔐 Checking document access: ${documentId}`);
 
-			// 确保token有效
-			const tokenValid = await this.ensureValidToken();
-			if (!tokenValid) {
-				return { hasAccess: false, error: 'Token无效，请重新授权', needsReauth: true };
-			}
-
-			// 尝试获取文档基本信息来验证访问权限
-			const response = await requestUrl({
-				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}`,
-				method: 'GET',
-				headers: {
-					'Authorization': `Bearer ${this.settings.accessToken}`,
-					'Content-Type': 'application/json'
+				// 第一次尝试前，确保token有效
+				if (attempt === 1) {
+					const tokenValid = await this.ensureValidToken();
+					if (!tokenValid) {
+						return { hasAccess: false, error: 'Token无效，请重新授权', needsReauth: true };
+					}
 				}
-			});
 
-			const data = response.json || JSON.parse(response.text);
+				// 尝试获取文档基本信息来验证访问权限
+				const response = await requestUrl({
+					url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}`,
+					method: 'GET',
+					headers: {
+						'Authorization': `Bearer ${this.settings.accessToken}`,
+						'Content-Type': 'application/json'
+					}
+				});
 
-			if (data.code === 0) {
-				Debug.log(`✅ Document access confirmed: ${documentId}`);
-				return { hasAccess: true };
-			} else if (data.code === 403) {
-				return { hasAccess: false, error: '没有访问该文档的权限' };
-			} else if (data.code === 404) {
-				return { hasAccess: false, error: '文档不存在或已被删除' };
-			} else if (data.code === 99991663) {
-				// Token失效的特定错误码
-				return { hasAccess: false, error: 'Token已失效', needsReauth: true };
-			} else {
-				return { hasAccess: false, error: data.msg || '文档访问检查失败' };
+				const data = response.json || JSON.parse(response.text);
+
+				if (data.code === 0) {
+					Debug.log(`✅ Document access confirmed: ${documentId}`);
+					return { hasAccess: true };
+				} else if (data.code === 403) {
+					return { hasAccess: false, error: '没有访问该文档的权限' };
+				} else if (data.code === 404) {
+					return { hasAccess: false, error: '文档不存在或已被删除' };
+				} else if (this.isTokenExpiredError(data.code)) {
+					// Token失效，如果是第一次尝试，则尝试刷新后重试
+					if (attempt === 1) {
+						const refreshSuccess = await this.refreshAccessToken();
+						if (refreshSuccess) {
+							continue; // 重试
+						} else {
+							return { hasAccess: false, error: 'Token已失效', needsReauth: true };
+						}
+					} else {
+						// 第二次尝试仍然失败
+						return { hasAccess: false, error: 'Token已失效', needsReauth: true };
+					}
+				} else {
+					return { hasAccess: false, error: data.msg || '文档访问检查失败' };
+				}
+
+			} catch (error) {
+				Debug.error(`Check document access error (attempt ${attempt}):`, error);
+
+				// 检查是否是Token相关的错误
+				const errorMessage = error instanceof Error ? error.message : '文档访问检查失败';
+				const isTokenError = errorMessage.includes('401') ||
+									errorMessage.includes('403') ||
+									errorMessage.includes('Unauthorized') ||
+									errorMessage.includes('status 401') ||
+									errorMessage.includes('status 403');
+
+				if (isTokenError && attempt === 1) {
+					// 第一次尝试遇到Token错误，尝试刷新后重试
+					const refreshSuccess = await this.refreshAccessToken();
+					if (refreshSuccess) {
+						continue; // 重试
+					}
+				}
+
+				// 如果不是Token错误，或者是第二次尝试，或者刷新失败，则返回错误
+				return {
+					hasAccess: false,
+					error: errorMessage,
+					needsReauth: isTokenError
+				};
 			}
-
-		} catch (error) {
-			Debug.error('Check document access error:', error);
-			return {
-				hasAccess: false,
-				error: error instanceof Error ? error.message : '文档访问检查失败'
-			};
 		}
+
+		// 如果两次尝试都失败，返回默认错误
+		return { hasAccess: false, error: '文档访问检查失败', needsReauth: true };
 	}
 
 	/**
@@ -3204,7 +3353,7 @@ export class FeishuApiService {
 	}
 
 	/**
-	 * 复制块到目标文档
+	 * 复制块到目标文档（轻量化改造：支持批量嵌套复制）
 	 * @param sourceDocumentId 源文档ID
 	 * @param targetDocumentId 目标文档ID
 	 * @param blockIds 要复制的块ID列表
@@ -3224,7 +3373,238 @@ export class FeishuApiService {
 			const sourceBlocks = await this.getAllDocumentBlocks(sourceDocumentId);
 			const blockMap = new Map(sourceBlocks.map(block => [block.block_id, block]));
 
-			// 按顺序复制每个块
+			// 尝试批量嵌套复制，如果失败则回退到逐个复制
+			const batchResult = await this.tryBatchNestedCopy(blockIds, blockMap, targetDocumentId, targetParentId);
+
+			if (batchResult.success) {
+				Debug.log(`✅ Successfully batch copied ${blockIds.length} blocks`);
+				return { success: true };
+			} else {
+				Debug.warn(`⚠️ Batch copy failed, falling back to individual copy: ${batchResult.error}`);
+				return await this.fallbackToIndividualCopy(blockIds, blockMap, targetDocumentId, targetParentId);
+			}
+
+		} catch (error) {
+			Debug.error('Copy blocks to target error:', error);
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : '复制块到目标文档失败'
+			};
+		}
+	}
+
+	/**
+	 * 尝试批量嵌套复制（支持智能分批）
+	 */
+	private async tryBatchNestedCopy(
+		blockIds: string[],
+		blockMap: Map<string, any>,
+		targetDocumentId: string,
+		targetParentId: string
+	): Promise<{success: boolean, error?: string}> {
+		try {
+			// 构建嵌套块数据结构
+			const nestedBlocks = this.buildNestedBlocksFromSource(blockIds, blockMap);
+
+			if (nestedBlocks.length === 0) {
+				return { success: true }; // 没有块需要复制
+			}
+
+			// 计算总块数
+			const totalBlocks = this.countTotalBlocks(nestedBlocks);
+			Debug.log(`📊 Total blocks to copy: ${totalBlocks} (root blocks: ${nestedBlocks.length})`);
+
+			// 如果总块数超过1000，进行智能分批
+			if (totalBlocks > 1000) {
+				Debug.log(`📦 Block count exceeds 1000, splitting into batches...`);
+				return await this.batchCopyInChunks(nestedBlocks, targetDocumentId, targetParentId);
+			}
+
+			// 单批次复制
+			Debug.log(`🚀 Attempting single batch copy of ${nestedBlocks.length} root blocks (${totalBlocks} total blocks)`);
+			return await this.executeSingleBatch(nestedBlocks, targetDocumentId, targetParentId);
+
+		} catch (error) {
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : '批量嵌套复制失败'
+			};
+		}
+	}
+
+	/**
+	 * 执行单批次复制
+	 */
+	private async executeSingleBatch(
+		nestedBlocks: any[],
+		targetDocumentId: string,
+		targetParentId: string
+	): Promise<{success: boolean, error?: string}> {
+		try {
+			Debug.log(`🚀 Attempting batch copy of ${nestedBlocks.length} blocks`);
+
+			const response = await requestUrl({
+				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${targetDocumentId}/blocks/${targetParentId}/children`,
+				method: 'POST',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify({
+					children: nestedBlocks
+				})
+			});
+
+			const data = response.json || JSON.parse(response.text);
+
+			if (data.code !== 0) {
+				Debug.error(`❌ Batch copy failed: ${data.msg}`);
+				return {
+					success: false,
+					error: data.msg || '批量创建嵌套块失败'
+				};
+			}
+
+			return { success: true };
+
+		} catch (error) {
+			Debug.error('❌ Single batch execution error:', error);
+
+			// 尝试从错误中提取响应信息
+			if (error && typeof error === 'object' && 'response' in error) {
+				try {
+					const response = (error as any).response;
+					Debug.error('❌ Error response status:', response?.status);
+					Debug.error('❌ Error response text:', response?.text);
+				} catch (parseError) {
+					Debug.error('❌ Failed to parse error response:', parseError);
+				}
+			}
+
+			// 提供更详细的错误信息
+			let errorMessage = '单批次复制失败';
+			if (error instanceof Error) {
+				errorMessage = error.message;
+				if (error.message.includes('status 400')) {
+					errorMessage += ' (可能是块数据格式问题或包含无效的图片块)';
+				}
+			}
+
+			return {
+				success: false,
+				error: errorMessage
+			};
+		}
+	}
+
+	/**
+	 * 智能分批复制（处理超过1000个块的情况）
+	 */
+	private async batchCopyInChunks(
+		nestedBlocks: any[],
+		targetDocumentId: string,
+		targetParentId: string
+	): Promise<{success: boolean, error?: string}> {
+		try {
+			const batches = this.splitBlocksIntoBatches(nestedBlocks, 800); // 使用800作为安全边界
+			Debug.log(`📦 Split into ${batches.length} batches`);
+
+			let currentParentId = targetParentId;
+
+			for (let i = 0; i < batches.length; i++) {
+				const batch = batches[i];
+				const batchSize = this.countTotalBlocks(batch);
+
+				Debug.log(`📦 Processing batch ${i + 1}/${batches.length} (${batchSize} blocks)`);
+
+				// 执行当前批次
+				const batchResult = await this.executeSingleBatch(batch, targetDocumentId, currentParentId);
+
+				if (!batchResult.success) {
+					return {
+						success: false,
+						error: `Batch ${i + 1} failed: ${batchResult.error}`
+					};
+				}
+
+				// 添加批次间延迟，避免频率限制
+				if (i < batches.length - 1) {
+					const delay = 500; // 500ms延迟
+					Debug.log(`⏱️ Waiting ${delay}ms between batches...`);
+					await new Promise(resolve => setTimeout(resolve, delay));
+				}
+			}
+
+			Debug.log(`✅ Successfully completed all ${batches.length} batches`);
+			return { success: true };
+
+		} catch (error) {
+			return {
+				success: false,
+				error: error instanceof Error ? error.message : '分批复制失败'
+			};
+		}
+	}
+
+	/**
+	 * 将块分割成批次（智能分割，保持块的完整性）
+	 */
+	private splitBlocksIntoBatches(blocks: any[], maxBlocksPerBatch: number): any[][] {
+		const batches: any[][] = [];
+		let currentBatch: any[] = [];
+		let currentBatchSize = 0;
+
+		for (const block of blocks) {
+			const blockSize = this.countTotalBlocks([block]);
+
+			// 如果单个块就超过限制，单独成批
+			if (blockSize > maxBlocksPerBatch) {
+				// 先保存当前批次（如果有内容）
+				if (currentBatch.length > 0) {
+					batches.push([...currentBatch]);
+					currentBatch = [];
+					currentBatchSize = 0;
+				}
+
+				// 单个大块独立成批
+				batches.push([block]);
+				continue;
+			}
+
+			// 检查加入当前块后是否超过限制
+			if (currentBatchSize + blockSize > maxBlocksPerBatch && currentBatch.length > 0) {
+				// 保存当前批次，开始新批次
+				batches.push([...currentBatch]);
+				currentBatch = [block];
+				currentBatchSize = blockSize;
+			} else {
+				// 加入当前批次
+				currentBatch.push(block);
+				currentBatchSize += blockSize;
+			}
+		}
+
+		// 保存最后一个批次
+		if (currentBatch.length > 0) {
+			batches.push(currentBatch);
+		}
+
+		return batches;
+	}
+
+	/**
+	 * 回退到逐个复制（保持原有逻辑）
+	 */
+	private async fallbackToIndividualCopy(
+		blockIds: string[],
+		blockMap: Map<string, any>,
+		targetDocumentId: string,
+		targetParentId: string
+	): Promise<{success: boolean, error?: string}> {
+		try {
+			Debug.log(`📋 Falling back to individual copy for ${blockIds.length} blocks`);
+
+			// 按顺序复制每个块（原有逻辑）
 			for (let i = 0; i < blockIds.length; i++) {
 				const blockId = blockIds[i];
 				const sourceBlock = blockMap.get(blockId);
@@ -3253,12 +3633,63 @@ export class FeishuApiService {
 			return { success: true };
 
 		} catch (error) {
-			Debug.error('Copy blocks to target error:', error);
+			Debug.error('Fallback individual copy error:', error);
 			return {
 				success: false,
-				error: error instanceof Error ? error.message : '复制块到目标文档失败'
+				error: error instanceof Error ? error.message : '逐个复制失败'
 			};
 		}
+	}
+
+	/**
+	 * 从源块构建嵌套块数据结构
+	 */
+	private buildNestedBlocksFromSource(blockIds: string[], blockMap: Map<string, any>): any[] {
+		const nestedBlocks: any[] = [];
+
+		for (const blockId of blockIds) {
+			const sourceBlock = blockMap.get(blockId);
+			if (!sourceBlock) {
+				Debug.warn(`⚠️ Source block not found: ${blockId}`);
+				continue;
+			}
+
+			// 特殊处理：跳过空图片块（批量创建不支持）
+			if (sourceBlock.block_type === 27 && (!sourceBlock.image || !sourceBlock.image.token)) {
+				Debug.warn(`⚠️ Skipping empty image block in batch copy: ${sourceBlock.block_id}`);
+				continue;
+			}
+
+			// 构建块数据（复用现有的buildBlockDataForCopy逻辑）
+			const blockData = this.buildBlockDataForCopy(sourceBlock);
+
+			// 递归处理子块
+			if (sourceBlock.children && sourceBlock.children.length > 0) {
+				blockData.children = this.buildNestedBlocksFromSource(sourceBlock.children, blockMap);
+			}
+
+			nestedBlocks.push(blockData);
+		}
+
+		return nestedBlocks;
+	}
+
+	/**
+	 * 计算嵌套块结构中的总块数
+	 */
+	private countTotalBlocks(blocks: any[]): number {
+		let count = 0;
+
+		for (const block of blocks) {
+			count++; // 当前块
+
+			// 递归计算子块
+			if (block.children && Array.isArray(block.children)) {
+				count += this.countTotalBlocks(block.children);
+			}
+		}
+
+		return count;
 	}
 
 	/**
@@ -3277,6 +3708,15 @@ export class FeishuApiService {
 
 		while (retryCount < maxRetries) {
 			try {
+				// 应用频率控制
+				await this.rateLimitController.throttle('block');
+
+				// 特殊处理：如果是图片块且没有有效数据，跳过
+				if (sourceBlock.block_type === 27 && (!sourceBlock.image || !sourceBlock.image.token)) {
+					Debug.warn(`⚠️ Skipping empty image block: ${sourceBlock.block_id}`);
+					return; // 直接跳过，不报错
+				}
+
 				// 构建块创建请求数据
 				const blockData = this.buildBlockDataForCopy(sourceBlock);
 
@@ -3324,13 +3764,30 @@ export class FeishuApiService {
 
 					if (retryCount >= maxRetries) {
 						Debug.error(`❌ Max retries reached for rate limit, giving up on block`);
+						// 如果是图片块错误，记录警告但不中断流程
+						if (sourceBlock.block_type === 27) {
+							Debug.warn(`⚠️ Image block copy failed due to rate limit, continuing...`);
+							return; // 不抛出错误，继续流程
+						}
 						throw new Error(`API频率限制，重试${maxRetries}次后仍失败: ${error.message}`);
 					}
 					// 继续重试
 				} else {
-					// 其他错误，直接抛出
+					// 其他错误处理
 					Debug.error('Copy individual block error:', error);
-					throw error;
+
+					if (retryCount >= maxRetries) {
+						// 如果是图片块错误，记录警告但不中断流程
+						if (sourceBlock.block_type === 27) {
+							Debug.warn(`⚠️ Image block copy failed after ${maxRetries} attempts, continuing...`);
+							return; // 不抛出错误，继续流程
+						}
+						throw error;
+					}
+
+					// 指数退避重试
+					const delay = Math.min(1000 * Math.pow(2, retryCount - 1), 5000);
+					await new Promise(resolve => setTimeout(resolve, delay));
 				}
 			}
 		}
@@ -3396,12 +3853,47 @@ export class FeishuApiService {
 					todo: sourceBlock.todo || { elements: [{ text_run: { content: '' } }] }
 				};
 
-			default:
-				// 对于其他类型的块，尝试保持原始结构
-				Debug.warn(`⚠️ Unsupported block type for copy: ${blockType}`);
+			case 22: // ISV块或其他特殊块
+				// 尝试保持原始结构，如果有文本内容则保留
+				if (sourceBlock.text) {
+					return {
+						block_type: 2, // 转为文本块但保留内容
+						text: sourceBlock.text
+					};
+				}
 				return {
-					block_type: 2, // 默认转为文本块
-					text: { elements: [{ text_run: { content: `[不支持的块类型: ${blockType}]` } }] }
+					block_type: blockType, // 保持原始类型
+					...sourceBlock
+				};
+
+			case 27: // 图片块
+				return {
+					block_type: 27,
+					image: sourceBlock.image || {}
+				};
+
+			case 33: // View块（文件块容器）
+				return {
+					block_type: 33,
+					view: sourceBlock.view || {}
+				};
+
+			default:
+				// 对于其他类型的块，尝试保持原始结构并保留文本内容
+				Debug.warn(`⚠️ Unsupported block type for copy: ${blockType}`);
+
+				// 如果有文本内容，保留文本内容
+				if (sourceBlock.text) {
+					return {
+						block_type: 2, // 转为文本块但保留内容
+						text: sourceBlock.text
+					};
+				}
+
+				// 否则尝试保持原始结构
+				return {
+					block_type: blockType,
+					...sourceBlock
 				};
 		}
 	}
@@ -3441,6 +3933,7 @@ export class FeishuApiService {
 		statusNotice?: Notice
 	): Promise<ShareResult> {
 		let tempDocumentId: string | null = null;
+		let tempSourceFileToken: string | null = null; // 临时文档的源文件token
 		let originalContentBackup: any[] | null = null;
 		let documentId: string | null = null;
 
@@ -3476,23 +3969,37 @@ export class FeishuApiService {
 				// 继续执行，但记录警告
 			}
 
-			// 4. 创建临时文档用于导入新内容
+			// 4. 创建临时文档用于导入新内容（不处理文件，保留占位符）
 			if (statusNotice) {
 				statusNotice.setMessage('📄 正在创建临时文档...');
 			}
 
-			const tempResult = await this.shareMarkdownWithFiles(title + '_temp', processResult, statusNotice);
+			// 创建不包含文件的processResult，保留占位符
+			const tempProcessResult: MarkdownProcessResult = {
+				content: processResult.content,
+				localFiles: [], // 不处理文件，保留占位符
+				frontMatter: processResult.frontMatter,
+				extractedTitle: processResult.extractedTitle
+			};
+
+			const tempResult = await this.shareMarkdownWithFiles(title + '_temp', tempProcessResult, statusNotice, true);
 			if (!tempResult.success) {
 				throw new Error(tempResult.error || '创建临时文档失败');
 			}
 
-			// 5. 提取临时文档ID
+			// 5. 提取临时文档ID和源文件token
 			tempDocumentId = this.extractDocumentIdFromUrl(tempResult.url!);
 			if (!tempDocumentId) {
 				throw new Error('无法从临时文档URL中提取文档ID');
 			}
 
+			// 保存临时文档的源文件token，用于后续清理
+			tempSourceFileToken = tempResult.sourceFileToken || null;
+
 			Debug.log(`✅ Temporary document created: ${tempDocumentId}`);
+			if (tempSourceFileToken) {
+				Debug.log(`📝 Temporary source file token saved: ${tempSourceFileToken}`);
+			}
 
 			// 6. 清空现有文档内容
 			if (statusNotice) {
@@ -3519,28 +4026,47 @@ export class FeishuApiService {
 				throw new Error(copyResult.error || '复制内容失败');
 			}
 
-			// 8. 处理本地文件上传（如果有）
+			// 8. 处理子文档和文件上传（如果有本地文件）
 			if (processResult.localFiles.length > 0) {
-				if (statusNotice) {
-					statusNotice.setMessage(`📎 正在处理 ${processResult.localFiles.length} 个本地文件...`);
-				}
-
 				try {
-					await this.processFileUploads(documentId, processResult.localFiles, statusNotice);
+					// 分离子文档和普通文件
+					const subDocuments = processResult.localFiles.filter(f => f.isSubDocument);
+					const regularFiles = processResult.localFiles.filter(f => !f.isSubDocument);
+
+					// 先处理子文档上传
+					if (subDocuments.length > 0) {
+						if (statusNotice) {
+							statusNotice.setMessage(`📄 正在处理 ${subDocuments.length} 个子文档...`);
+						}
+						await this.processSubDocuments(documentId, subDocuments, statusNotice);
+					}
+
+					// 再处理普通文件上传
+					if (regularFiles.length > 0) {
+						if (statusNotice) {
+							statusNotice.setMessage(`📎 正在处理 ${regularFiles.length} 个附件...`);
+						}
+						await this.processFileUploads(documentId, regularFiles, statusNotice);
+					}
 				} catch (fileError) {
 					Debug.warn('⚠️ File upload failed, but document content was updated:', fileError);
 					// 文件上传失败不影响主要内容更新
 				}
 			}
 
-			// 9. 删除临时文档
+			// 9. 删除临时文档和源文件
 			try {
 				if (statusNotice) {
 					statusNotice.setMessage('🗑️ 正在清理临时文档...');
 				}
+
+				// 先删除临时文档
 				await this.deleteDocument(tempDocumentId);
 				tempDocumentId = null; // 标记已删除
 				Debug.log('✅ Temporary document deleted successfully');
+
+				// 临时文档的源文件已在shareMarkdownWithFiles中处理，无需重复删除
+				Debug.log('📝 Temporary source file handled by shareMarkdownWithFiles, no additional deletion needed');
 			} catch (deleteError) {
 				Debug.warn('⚠️ Failed to delete temporary document:', deleteError);
 				// 不影响主流程，只记录警告
@@ -3558,7 +4084,7 @@ export class FeishuApiService {
 			Debug.error('Update existing document error:', error);
 
 			// 错误处理和回滚逻辑
-			await this.handleUpdateError(error, documentId, tempDocumentId, originalContentBackup, statusNotice);
+			await this.handleUpdateError(error, documentId, tempDocumentId, tempSourceFileToken, originalContentBackup, title, statusNotice);
 
 			return {
 				success: false,
@@ -3572,27 +4098,36 @@ export class FeishuApiService {
 	 * @param error 错误对象
 	 * @param documentId 目标文档ID
 	 * @param tempDocumentId 临时文档ID
+	 * @param tempSourceFileToken 临时文档源文件token
 	 * @param originalContentBackup 原始内容备份
+	 * @param title 文档标题（用于构建临时文件名）
 	 * @param statusNotice 状态通知
 	 */
 	private async handleUpdateError(
 		error: any,
 		documentId: string | null,
 		tempDocumentId: string | null,
+		tempSourceFileToken: string | null,
 		originalContentBackup: any[] | null,
+		title: string,
 		statusNotice?: Notice
 	): Promise<void> {
 		try {
 			Debug.log('🔄 Starting error handling and rollback process...');
 
-			// 1. 清理临时文档
+			// 1. 清理临时文档和源文件
 			if (tempDocumentId) {
 				try {
 					if (statusNotice) {
 						statusNotice.setMessage('🗑️ 正在清理临时文档...');
 					}
+
+					// 先删除临时文档
 					await this.deleteDocument(tempDocumentId);
 					Debug.log('✅ Temporary document cleaned up');
+
+					// 临时文档的源文件已在shareMarkdownWithFiles中处理，无需重复删除
+					Debug.log('📝 Temporary source file handled by shareMarkdownWithFiles, no additional cleanup needed');
 				} catch (cleanupError) {
 					Debug.warn('⚠️ Failed to cleanup temporary document:', cleanupError);
 				}

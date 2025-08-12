@@ -137,6 +137,8 @@ export class FeishuSettingTab extends PluginSettingTab {
 							this.display(); // 刷新界面
 						});
 				});
+
+
 		}
 
 		// 内容处理设置部分

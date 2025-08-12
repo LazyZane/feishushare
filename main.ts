@@ -275,32 +275,21 @@ export default class FeishuPlugin extends Plugin {
 					this.log(`Token needs reauth, will retry after authorization: ${urlAccessible.error}`);
 					statusNotice.setMessage('🔑 需要重新授权，授权后将重试更新...');
 
-					// 需要重新授权，先创建新文档（这会触发授权流程）
-					result = await this.feishuApi.shareMarkdownWithFiles(title, processResult, statusNotice);
+					// 直接触发重新授权，不创建完整文档
+					const authSuccess = await this.feishuApi.ensureValidTokenWithReauth(statusNotice);
 
-					// 授权成功后，重新检查原文档
-					if (result.success) {
+					if (authSuccess) {
 						this.log('Authorization completed, retrying original document access');
 						statusNotice.setMessage('🔄 重新检查原文档可访问性...');
 
+						// 授权成功后，重新检查原文档可访问性
 						const retryAccessible = await this.feishuApi.checkDocumentUrlAccessibility(isUpdateMode.feishuUrl!);
 
 						if (retryAccessible.isAccessible) {
 							this.log('Original document is now accessible after reauth, updating it');
 							statusNotice.setMessage('🔄 正在更新原文档...');
 
-							// 删除刚创建的临时文档
-							try {
-								const tempDocId = this.feishuApi.extractDocumentIdFromUrl(result.url);
-								if (tempDocId) {
-									await this.feishuApi.deleteDocument(tempDocId);
-									this.log('Temporary document deleted after successful reauth');
-								}
-							} catch (deleteError) {
-								this.log(`Failed to delete temporary document: ${deleteError.message}`, 'warn');
-							}
-
-							// 更新原文档
+							// 直接更新原文档
 							result = await this.feishuApi.updateExistingDocument(
 								isUpdateMode.feishuUrl!,
 								title,
@@ -308,13 +297,17 @@ export default class FeishuPlugin extends Plugin {
 								statusNotice
 							);
 						} else {
-							this.log(`Original document still not accessible after reauth: ${retryAccessible.error}, using new document`);
+							this.log(`Original document still not accessible after reauth: ${retryAccessible.error}, creating new document`);
+							// 原文档仍不可访问，创建新文档
+							result = await this.feishuApi.shareMarkdownWithFiles(title, processResult, statusNotice);
 							urlChanged = true;
 
 							if (result.success) {
 								this.log(`Document URL changed from ${isUpdateMode.feishuUrl} to ${result.url}`);
 							}
 						}
+					} else {
+						throw new Error('重新授权失败，请手动重新授权');
 					}
 				} else {
 					this.log(`Existing document is not accessible: ${urlAccessible.error}, creating new document`);

@@ -1,7 +1,7 @@
-// 调试工具类 - 生产环境模式
+// 调试工具类 - 调试模式开启
 export class Debug {
-    private static enabled = false; // 关闭调试模式（生产环境）
-    private static verboseMode = false; // 关闭详细日志
+    private static enabled = true; // 开启调试模式（诊断临时文件删除问题）
+    private static verboseMode = true; // 开启详细日志
 
     static log(...args: any[]) {
         if (this.enabled) {

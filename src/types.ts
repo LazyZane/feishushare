@@ -48,13 +48,22 @@ export interface FeishuUserInfo {
 
 export interface FeishuOAuthResponse {
 	code: number;
-	msg: string;
-	data: {
+	msg?: string;
+	// v1 API格式
+	data?: {
 		access_token: string;
 		refresh_token: string;
 		expires_in: number;
 		token_type: string;
 	};
+	// v2 API格式（直接在根级别）
+	access_token?: string;
+	refresh_token?: string;
+	expires_in?: number;
+	token_type?: string;
+	// v2 API错误格式
+	error?: string;
+	error_description?: string;
 }
 
 export interface FeishuApiError {
@@ -67,6 +76,7 @@ export interface ShareResult {
 	url?: string;
 	title?: string;
 	error?: string;
+	sourceFileToken?: string; // 源文件token，用于临时文档清理
 }
 
 export interface FeishuFileUploadResponse {

@@ -8,14 +8,14 @@ export const FEISHU_CONFIG = {
 	
 	// OAuth 相关地址
 	AUTHORIZE_URL: 'https://open.feishu.cn/open-apis/authen/v1/authorize',
-	TOKEN_URL: 'https://open.feishu.cn/open-apis/authen/v1/access_token',
-	REFRESH_TOKEN_URL: 'https://open.feishu.cn/open-apis/authen/v1/refresh_access_token',
+	TOKEN_URL: 'https://open.feishu.cn/open-apis/authen/v2/oauth/token',
+	REFRESH_TOKEN_URL: 'https://open.feishu.cn/open-apis/authen/v2/oauth/token',
 	
-	// API 权限范围
-	SCOPES: 'contact:user.base:readonly docx:document drive:drive',
+	// API 权限范围（包含offline_access以支持refresh_token）
+	SCOPES: 'contact:user.base:readonly docx:document drive:drive offline_access',
 	
-	// 文件上传相关
-	UPLOAD_URL: 'https://open.feishu.cn/open-apis/drive/v1/files/upload_all',
+	// 文件上传相关（使用素材上传API，导入后自动删除源文件）
+	UPLOAD_URL: 'https://open.feishu.cn/open-apis/drive/v1/medias/upload_all',
 	
 	// 文档创建相关
 	DOC_CREATE_URL: 'https://open.feishu.cn/open-apis/docx/v1/documents',
