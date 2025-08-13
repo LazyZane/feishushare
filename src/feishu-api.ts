@@ -1517,13 +1517,22 @@ export class FeishuApiService {
 		for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
 			const block = blocks[blockIndex];
 
-			// 只处理文本块
-			if (!block.text || !block.text.elements) {
+			// 处理文本块、列表块等包含文本内容的块
+			let textData = null;
+			if (block.text && block.text.elements) {
+				textData = block.text;
+			} else if (block.bullet && block.bullet.elements) {
+				textData = block.bullet; // 无序列表块
+			} else if (block.ordered && block.ordered.elements) {
+				textData = block.ordered; // 有序列表块
+			}
+
+			if (!textData) {
 				continue;
 			}
 
 			// 提取块的所有文本内容
-			const blockContent = this.extractBlockTextContent(block);
+			const blockContent = this.extractBlockTextContentFromData(textData);
 
 			// 如果块内容不包含占位符特征，跳过
 			if (!this.hasPlaceholderFeatures(blockContent)) {
@@ -1567,7 +1576,28 @@ export class FeishuApiService {
 	 * 提取块的文本内容
 	 */
 	private extractBlockTextContent(block: any): string {
-		return block.text.elements
+		// 处理不同类型的块
+		let textData = null;
+		if (block.text && block.text.elements) {
+			textData = block.text;
+		} else if (block.bullet && block.bullet.elements) {
+			textData = block.bullet;
+		} else if (block.ordered && block.ordered.elements) {
+			textData = block.ordered;
+		}
+
+		if (!textData) {
+			return '';
+		}
+
+		return this.extractBlockTextContentFromData(textData);
+	}
+
+	/**
+	 * 从文本数据中提取文本内容
+	 */
+	private extractBlockTextContentFromData(textData: any): string {
+		return textData.elements
 			.filter((element: any) => element.text_run && element.text_run.content)
 			.map((element: any) => element.text_run.content)
 			.join('');
@@ -1838,9 +1868,15 @@ export class FeishuApiService {
 				checkedBlocks.add(placeholderBlock.blockId);
 
 				const block = allBlocks.find(item => item.block_id === placeholderBlock.blockId);
-				if (block && block.text) {
+				if (block) {
+					// 使用修复后的方法获取块内容（支持列表块）
 					const blockContent = this.extractBlockTextContent(block);
-					Debug.log(`🔍 Checking block ${placeholderBlock.blockId}: "${blockContent.substring(0, 100)}..."`);
+					Debug.log(`🔍 Checking block ${placeholderBlock.blockId} (type: ${block.block_type}): "${blockContent.substring(0, 100)}..."`);
+
+					if (blockContent.length === 0) {
+						Debug.log(`⚠️ Block has no text content: ${placeholderBlock.blockId}`);
+						continue;
+					}
 
 					// 检查是否仍包含占位符文本（考虑多种格式）
 					const originalPlaceholder = placeholderBlock.placeholder; // __FEISHU_FILE_xxx__
@@ -1853,13 +1889,13 @@ export class FeishuApiService {
 
 					if (hasOriginal || hasFeishu || hasClean) {
 						const foundFormat = hasOriginal ? 'original' : hasFeishu ? 'feishu' : 'clean';
-						Debug.log(`✅ Found remaining placeholder: ${originalPlaceholder} (format: ${foundFormat})`);
+						Debug.log(`✅ Found remaining placeholder: ${originalPlaceholder} (format: ${foundFormat}) in block type ${block.block_type}`);
 						remainingPlaceholders.push(placeholderBlock);
 					} else {
 						Debug.log(`❌ Placeholder already cleaned: ${originalPlaceholder}`);
 					}
 				} else {
-					Debug.log(`⚠️ Block not found or has no text: ${placeholderBlock.blockId}`);
+					Debug.log(`⚠️ Block not found: ${placeholderBlock.blockId}`);
 				}
 			}
 
@@ -1884,45 +1920,10 @@ export class FeishuApiService {
 
 		try {
 			Debug.log(`🔧 Batch replacing ${placeholderBlocks.length} placeholder texts...`);
+			Debug.log(`⚠️ Batch replacement requires individual processing for precise placeholder removal, falling back to individual replacement...`);
 
-			// 构建批量更新请求
-			const requests = placeholderBlocks.map(placeholderBlock => ({
-				block_id: placeholderBlock.blockId,
-				update_text_elements: {
-					elements: [
-						{
-							text_run: {
-								content: ""
-							}
-						}
-					]
-				}
-			}));
-
-			const requestData = {
-				requests: requests
-			};
-
-			const response = await requestUrl({
-				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/batch_update`,
-				method: 'PATCH',
-				headers: {
-					'Authorization': `Bearer ${this.settings.accessToken}`,
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify(requestData)
-			});
-
-			const data = response.json || JSON.parse(response.text);
-			Debug.log(`📋 Batch replace placeholder response:`, data);
-
-			if (data.code !== 0) {
-				Debug.warn(`⚠️ Batch replace failed: ${data.msg}, falling back to individual replacement...`);
-				// 如果批量替换失败，回退到逐个替换
-				await this.fallbackIndividualReplace(documentId, placeholderBlocks);
-			} else {
-				Debug.log(`✅ Successfully batch replaced ${placeholderBlocks.length} placeholder texts`);
-			}
+			// 批量替换无法精确处理占位符（需要保留其他文本），直接使用逐个替换
+			await this.fallbackIndividualReplace(documentId, placeholderBlocks);
 
 		} catch (error) {
 			Debug.error('Batch replace placeholder text error:', error);
@@ -1951,16 +1952,37 @@ export class FeishuApiService {
 	 */
 	private async replacePlaceholderText(documentId: string, placeholderBlock: PlaceholderBlock): Promise<void> {
 		try {
-			// 方法1：尝试替换文本内容为空
+			Debug.log(`🔧 Starting placeholder replacement for block: ${placeholderBlock.blockId}`);
+			Debug.log(`🎯 Target placeholder: ${placeholderBlock.placeholder}`);
+
+			// 获取当前块的内容
+			const blockInfo = await this.getBlockContent(documentId, placeholderBlock.blockId);
+			if (!blockInfo) {
+				Debug.warn(`⚠️ Cannot get block content for ${placeholderBlock.blockId}, trying delete method...`);
+				await this.deletePlaceholderBlock(documentId, placeholderBlock);
+				return;
+			}
+
+			Debug.log(`📋 Retrieved ${blockInfo.elements.length} elements from block`);
+			blockInfo.elements.forEach((element, index) => {
+				if (element.text_run) {
+					Debug.log(`  Element ${index + 1}: "${element.text_run.content}"`);
+				}
+			});
+
+			// 构建新的文本元素数组，移除占位符但保留其他文本
+			const newElements = this.buildTextElementsWithoutPlaceholder(blockInfo.elements, placeholderBlock.placeholder);
+
+			Debug.log(`🔄 Built ${newElements.length} new elements after placeholder removal`);
+			newElements.forEach((element, index) => {
+				if (element.text_run) {
+					Debug.log(`  New Element ${index + 1}: "${element.text_run.content}"`);
+				}
+			});
+
 			const requestData = {
 				update_text_elements: {
-					elements: [
-						{
-							text_run: {
-								content: ""
-							}
-						}
-					]
+					elements: newElements
 				}
 			};
 
@@ -2730,15 +2752,165 @@ export class FeishuApiService {
 				return null;
 			}
 
-			// 返回文本元素数组
-			return {
-				elements: data.data?.block?.text?.elements || []
-			};
+			const block = data.data?.block;
+			if (!block) {
+				Debug.error(`❌ No block data found for ${blockId}`);
+				return null;
+			}
+
+			// 根据块类型获取相应的文本元素
+			let elements: any[] = [];
+
+			if (block.text && block.text.elements) {
+				elements = block.text.elements;
+			} else if (block.bullet && block.bullet.elements) {
+				elements = block.bullet.elements;
+			} else if (block.ordered && block.ordered.elements) {
+				elements = block.ordered.elements;
+			} else {
+				Debug.warn(`⚠️ No text elements found in block ${blockId}, block type: ${block.block_type}`);
+				return { elements: [] };
+			}
+
+			Debug.log(`📋 Retrieved ${elements.length} elements from block ${blockId}`);
+			return { elements };
 
 		} catch (error) {
 			Debug.error(`❌ Error getting block content for ${blockId}:`, error);
 			return null;
 		}
+	}
+
+	/**
+	 * 构建移除占位符的文本元素数组（保留其他文本）
+	 */
+	private buildTextElementsWithoutPlaceholder(originalElements: any[], targetPlaceholder: string): any[] {
+		Debug.log(`🔧 Building text elements without placeholder: ${targetPlaceholder}`);
+		const newElements: any[] = [];
+
+		// 检查所有可能的占位符格式
+		const cleanPlaceholder = targetPlaceholder.replace(/^__/, '').replace(/__$/, '');
+		const possiblePlaceholders = [
+			targetPlaceholder,                    // __OB_CONTENT_xxx__
+			`!${cleanPlaceholder}!`,             // !OB_CONTENT_xxx!
+			cleanPlaceholder,                    // OB_CONTENT_xxx
+			`!${cleanPlaceholder}`,              // !OB_CONTENT_xxx (缺少结尾感叹号)
+			`${cleanPlaceholder}!`               // OB_CONTENT_xxx! (缺少开头感叹号)
+		];
+
+		Debug.log(`🎯 Clean placeholder: ${cleanPlaceholder}`);
+		Debug.log(`🔍 Possible placeholder formats:`, possiblePlaceholders);
+
+		// 遍历原始元素，查找并移除占位符
+		for (let i = 0; i < originalElements.length; i++) {
+			const element = originalElements[i];
+			if (element.text_run && element.text_run.content) {
+				let content = element.text_run.content;
+				let foundPlaceholder = false;
+
+				Debug.log(`📝 Processing element ${i + 1}: "${content}"`);
+
+				// 检查并移除所有可能的占位符格式
+				for (const placeholder of possiblePlaceholders) {
+					const placeholderIndex = content.indexOf(placeholder);
+					if (placeholderIndex !== -1) {
+						Debug.log(`✅ Found placeholder "${placeholder}" at position ${placeholderIndex}`);
+
+						// 找到占位符，分割文本
+						const beforePlaceholder = content.substring(0, placeholderIndex);
+						const afterPlaceholder = content.substring(placeholderIndex + placeholder.length);
+
+						Debug.log(`  Before: "${beforePlaceholder}"`);
+						Debug.log(`  After: "${afterPlaceholder}"`);
+
+						// 添加占位符前的文本
+						if (beforePlaceholder.length > 0) {
+							newElements.push({
+								text_run: {
+									content: beforePlaceholder,
+									text_element_style: element.text_run.text_element_style
+								}
+							});
+							Debug.log(`  ➕ Added before text: "${beforePlaceholder}"`);
+						}
+
+						// 添加占位符后的文本
+						if (afterPlaceholder.length > 0) {
+							newElements.push({
+								text_run: {
+									content: afterPlaceholder,
+									text_element_style: element.text_run.text_element_style
+								}
+							});
+							Debug.log(`  ➕ Added after text: "${afterPlaceholder}"`);
+						}
+
+						foundPlaceholder = true;
+						break; // 找到一个占位符就停止
+					}
+				}
+
+				// 如果没有找到完整占位符，检查是否有残留的感叹号模式
+				if (!foundPlaceholder) {
+					// 检查是否只是残留的感叹号（如 "解决 !" 或单独的 "!"）
+					const trimmedContent = content.trim();
+					Debug.log(`🔍 No placeholder found, checking for residual exclamation: "${trimmedContent}"`);
+
+					// 检查是否是单独的感叹号或以感叹号结尾的短文本
+					if (trimmedContent === '!' || (trimmedContent.endsWith('!') && trimmedContent.length <= 10)) {
+						Debug.log(`⚠️ Detected residual exclamation mark pattern`);
+
+						if (trimmedContent === '!') {
+							// 单独的感叹号，直接跳过（不添加到新元素中）
+							Debug.log(`✅ Removed standalone exclamation mark`);
+							foundPlaceholder = true;
+						} else {
+							// 以感叹号结尾的文本，移除感叹号
+							const withoutExclamation = content.replace(/\s*!\s*$/, '');
+							if (withoutExclamation.length > 0) {
+								newElements.push({
+									text_run: {
+										content: withoutExclamation,
+										text_element_style: element.text_run.text_element_style
+									}
+								});
+								Debug.log(`✅ Removed trailing exclamation, new content: "${withoutExclamation}"`);
+								foundPlaceholder = true;
+							}
+						}
+					}
+				}
+
+				// 如果仍然没有找到占位符，保持原样
+				if (!foundPlaceholder) {
+					newElements.push(element);
+					Debug.log(`❌ No placeholder or residual pattern found, keeping original: "${content}"`);
+				}
+			} else {
+				// 非文本元素，保持原样
+				newElements.push(element);
+			}
+		}
+
+		// 如果所有元素都被清除了，添加一个空的文本元素
+		if (newElements.length === 0) {
+			Debug.log(`⚠️ All elements were removed, adding empty text element to prevent API error`);
+			newElements.push({
+				text_run: {
+					content: '',
+					text_element_style: {}
+				}
+			});
+		}
+
+		Debug.log(`🔄 Final result: ${newElements.length} elements`);
+		newElements.forEach((element, index) => {
+			if (element.text_run) {
+				Debug.log(`  Final Element ${index + 1}: "${element.text_run.content}"`);
+			}
+		});
+
+		return newElements;
 	}
 
 	/**
