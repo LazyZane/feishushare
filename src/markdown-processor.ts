@@ -714,6 +714,7 @@ export class MarkdownProcessor {
 
 	/**
 	 * 在文件内容中添加或更新分享标记到 Front Matter
+	 * 基于文本操作，保留原始YAML结构
 	 * @param content 原始文件内容
 	 * @param shareUrl 分享链接
 	 * @returns 更新后的文件内容
@@ -724,39 +725,83 @@ export class MarkdownProcessor {
 		const chinaTime = new Date(now.getTime() + (8 * 60 * 60 * 1000)); // UTC+8
 		const currentTime = chinaTime.toISOString().replace('Z', '+08:00');
 
-		// 解析现有的 Front Matter
-		const { frontMatter, content: contentWithoutFrontMatter } = this.parseFrontMatter(content);
+		// 检查是否有Front Matter
+		if (!content.startsWith('---\n') && !content.startsWith('---\r\n')) {
+			// 没有Front Matter，创建新的
+			const newFrontMatter = [
+				'---',
+				'feishushare: true',
+				`feishu_url: "${shareUrl}"`,
+				`feishu_shared_at: "${currentTime}"`,
+				'---',
+				''
+			].join('\n');
+			return newFrontMatter + content;
+		}
 
-		// 创建或更新分享标记
-		const updatedFrontMatter: FrontMatterData = {
-			...frontMatter,
-			feishushare: true,
-			feishu_url: shareUrl,
-			feishu_shared_at: currentTime
+		const lines = content.split('\n');
+		let endIndex = -1;
+
+		// 找到Front Matter的结束位置
+		for (let i = 1; i < lines.length; i++) {
+			if (lines[i].trim() === '---') {
+				endIndex = i;
+				break;
+			}
+		}
+
+		if (endIndex === -1) {
+			// 没有找到结束标记，不是有效的Front Matter
+			return content;
+		}
+
+		// 分离Front Matter和内容
+		const frontMatterLines = lines.slice(0, endIndex + 1); // 包含开始和结束的---
+		const contentLines = lines.slice(endIndex + 1);
+
+		// 在Front Matter中查找并更新/添加飞书相关字段
+		const fieldsToUpdate: { [key: string]: string } = {
+			'feishushare': 'true',
+			'feishu_url': `"${shareUrl}"`,
+			'feishu_shared_at': `"${currentTime}"`
 		};
 
-		// 重新构建 Front Matter
-		const frontMatterLines = ['---'];
+		// 记录哪些字段已经存在
+		const existingFields = new Set<string>();
 
-		// 添加所有字段
-		for (const [key, value] of Object.entries(updatedFrontMatter)) {
-			if (value !== null && value !== undefined) {
-				if (typeof value === 'string') {
-					// 如果字符串包含特殊字符，用引号包围
-					if (value.includes(':') || value.includes('#') || value.includes('[') || value.includes(']')) {
-						frontMatterLines.push(`${key}: "${value}"`);
-					} else {
-						frontMatterLines.push(`${key}: ${value}`);
+		// 遍历Front Matter行，更新已存在的字段
+		for (let i = 1; i < frontMatterLines.length - 1; i++) { // 跳过开始和结束的---
+			const line = frontMatterLines[i];
+			const trimmedLine = line.trim();
+
+			if (trimmedLine && !trimmedLine.startsWith('#')) {
+				const colonIndex = trimmedLine.indexOf(':');
+				if (colonIndex !== -1) {
+					const key = trimmedLine.substring(0, colonIndex).trim();
+
+					if (fieldsToUpdate.hasOwnProperty(key)) {
+						// 更新现有字段
+						frontMatterLines[i] = `${key}: ${fieldsToUpdate[key]}`;
+						existingFields.add(key);
 					}
-				} else {
-					frontMatterLines.push(`${key}: ${value}`);
 				}
 			}
 		}
 
-		frontMatterLines.push('---');
+		// 添加不存在的字段（在最后一个---之前）
+		const newFields: string[] = [];
+		for (const [key, value] of Object.entries(fieldsToUpdate)) {
+			if (!existingFields.has(key)) {
+				newFields.push(`${key}: ${value}`);
+			}
+		}
 
-		// 组合最终内容
-		return frontMatterLines.join('\n') + '\n' + contentWithoutFrontMatter;
+		if (newFields.length > 0) {
+			// 在最后的---之前插入新字段
+			frontMatterLines.splice(frontMatterLines.length - 1, 0, ...newFields);
+		}
+
+		// 重新组合内容
+		return [...frontMatterLines, ...contentLines].join('\n');
 	}
 }

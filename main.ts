@@ -465,6 +465,7 @@ export default class FeishuPlugin extends Plugin {
 
 	/**
 	 * 更新分享时间戳
+	 * 基于文本操作，保留原始YAML结构
 	 * @param content 原始文件内容
 	 * @returns 更新后的文件内容
 	 */
@@ -474,39 +475,38 @@ export default class FeishuPlugin extends Plugin {
 		const chinaTime = new Date(now.getTime() + (8 * 60 * 60 * 1000)); // UTC+8
 		const currentTime = chinaTime.toISOString().replace('Z', '+08:00');
 
-		// 解析现有的 Front Matter
-		const { frontMatter, content: contentWithoutFrontMatter } = this.markdownProcessor.processFrontMatter(content, 'remove');
-
-		if (!frontMatter) {
-			// 如果没有Front Matter，直接返回原内容
-			return content;
+		// 检查是否有Front Matter
+		if (!content.startsWith('---\n') && !content.startsWith('---\r\n')) {
+			return content; // 没有Front Matter，直接返回
 		}
 
-		// 更新时间戳
-		const updatedFrontMatter = {
-			...frontMatter,
-			feishu_shared_at: currentTime
-		};
+		const lines = content.split('\n');
+		let endIndex = -1;
 
-		// 重新构建 Front Matter
-		const frontMatterLines = ['---'];
-		for (const [key, value] of Object.entries(updatedFrontMatter)) {
-			if (value != null) {
-				if (typeof value === 'string') {
-					// 检查是否需要引号
-					if (value.includes(':') || value.includes('#') || value.includes('[') || value.includes(']')) {
-						frontMatterLines.push(`${key}: "${value}"`);
-					} else {
-						frontMatterLines.push(`${key}: ${value}`);
-					}
-				} else {
-					frontMatterLines.push(`${key}: ${value}`);
-				}
+		// 找到Front Matter的结束位置
+		for (let i = 1; i < lines.length; i++) {
+			if (lines[i].trim() === '---') {
+				endIndex = i;
+				break;
 			}
 		}
-		frontMatterLines.push('---');
 
-		return frontMatterLines.join('\n') + '\n' + contentWithoutFrontMatter;
+		if (endIndex === -1) {
+			return content; // 没有找到结束标记
+		}
+
+		// 查找并更新feishu_shared_at字段
+		for (let i = 1; i < endIndex; i++) {
+			const line = lines[i];
+			const trimmedLine = line.trim();
+
+			if (trimmedLine.startsWith('feishu_shared_at:')) {
+				lines[i] = `feishu_shared_at: "${currentTime}"`;
+				break;
+			}
+		}
+
+		return lines.join('\n');
 	}
 
 	/**
