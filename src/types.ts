@@ -17,6 +17,38 @@ export type FrontMatterHandling = 'remove' | 'keep-as-code';
  */
 export type LinkSharePermission = 'tenant_readable' | 'tenant_editable' | 'anyone_readable' | 'anyone_editable';
 
+/**
+ * 目标类型：云空间或知识库
+ */
+export type TargetType = 'drive' | 'wiki';
+
+/**
+ * 知识库空间信息
+ */
+export interface WikiSpace {
+	space_id: string;
+	name: string;
+	description?: string;
+	space_type: string;
+	visibility: string;
+}
+
+/**
+ * 知识库节点信息
+ */
+export interface WikiNode {
+	space_id: string;
+	node_token: string;
+	obj_token: string;
+	obj_type: string;
+	parent_node_token?: string;
+	title: string;
+	has_child: boolean;
+	node_type?: string;
+	creator?: string;
+	owner?: string;
+}
+
 export interface FeishuSettings {
 	appId: string;
 	appSecret: string;
@@ -24,8 +56,20 @@ export interface FeishuSettings {
 	accessToken: string;
 	refreshToken: string;
 	userInfo: FeishuUserInfo | null;
+
+	// 新增：目标类型选择
+	targetType: TargetType;
+
+	// 云空间设置（原有）
 	defaultFolderId: string;
 	defaultFolderName: string;
+
+	// 知识库设置（新增）
+	defaultWikiSpaceId: string;
+	defaultWikiSpaceName: string;
+	defaultWikiNodeToken: string;
+	defaultWikiNodeName: string;
+
 	titleSource: TitleSource;
 	frontMatterHandling: FrontMatterHandling;
 	// 新增：链接分享设置
@@ -118,6 +162,45 @@ export interface FeishuFolderListResponse {
 }
 
 /**
+ * 知识库空间列表响应
+ */
+export interface WikiSpaceListResponse {
+	code: number;
+	msg: string;
+	data: {
+		items: WikiSpace[];
+		page_token?: string;
+		has_more: boolean;
+	};
+}
+
+/**
+ * 知识库节点列表响应
+ */
+export interface WikiNodeListResponse {
+	code: number;
+	msg: string;
+	data: {
+		items: WikiNode[];
+		page_token?: string;
+		has_more: boolean;
+	};
+}
+
+/**
+ * 移动文档到知识库响应
+ */
+export interface MoveDocToWikiResponse {
+	code: number;
+	msg: string;
+	data: {
+		wiki_token?: string;
+		task_id?: string;
+		applied?: boolean;
+	};
+}
+
+/**
  * 本地文件信息
  */
 export interface LocalFileInfo {
@@ -126,7 +209,23 @@ export interface LocalFileInfo {
 	placeholder: string;
 	isImage: boolean;
 	isSubDocument?: boolean;  // 新增：标识是否为子文档（双链引用的md文件）
+	isCallout?: boolean;      // 新增：标识是否为 Callout 块
 	altText?: string;
+}
+
+/**
+ * Callout 块信息
+ */
+export interface CalloutInfo {
+	placeholder: string;
+	type: string;
+	title: string;
+	content: string;
+	foldable: boolean;
+	backgroundColor?: number; // 1-15，对应飞书高亮块背景色
+	borderColor?: number;     // 1-7，对应飞书高亮块边框色
+	textColor?: number;       // 1-7，对应飞书高亮块文字颜色
+	emojiId?: string;         // 表情图标
 }
 
 /**
@@ -143,6 +242,7 @@ export interface FrontMatterData {
 export interface MarkdownProcessResult {
 	content: string;
 	localFiles: LocalFileInfo[];
+	calloutBlocks?: CalloutInfo[];  // 新增：Callout 块信息
 	frontMatter: FrontMatterData | null;
 	extractedTitle: string | null;
 }
@@ -223,5 +323,6 @@ export interface PlaceholderBlock {
 	parentId: string;
 	index: number;
 	placeholder: string;
-	fileInfo: LocalFileInfo;
+	fileInfo?: LocalFileInfo;     // 文件信息（可选，用于文件/图片）
+	calloutInfo?: CalloutInfo;    // Callout 信息（可选，用于 Callout 块）
 }

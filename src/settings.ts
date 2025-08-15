@@ -2,6 +2,7 @@ import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
 import FeishuPlugin from '../main';
 import { ManualAuthModal } from './manual-auth-modal';
 import { FolderSelectModal } from './folder-select-modal';
+import { WikiSelectModal } from './wiki-select-modal';
 
 export class FeishuSettingTab extends PluginSettingTab {
 	plugin: FeishuPlugin;
@@ -141,6 +142,33 @@ export class FeishuSettingTab extends PluginSettingTab {
 
 		}
 
+		// 分享目标设置部分
+		containerEl.createEl('h3', { text: '🎯 分享目标设置' });
+
+		// 目标类型选择
+		new Setting(containerEl)
+			.setName('分享目标')
+			.setDesc('选择文档分享的目标位置')
+			.addDropdown(dropdown => {
+				dropdown
+					.addOption('drive', '云空间')
+					.addOption('wiki', '知识库')
+					.setValue(this.plugin.settings.targetType || 'drive')
+					.onChange(async (value: 'drive' | 'wiki') => {
+						this.plugin.settings.targetType = value;
+						await this.plugin.saveSettings();
+						this.plugin.feishuApi.updateSettings(this.plugin.settings);
+						this.display(); // 刷新界面以显示相应的设置项
+					});
+			});
+
+		// 根据目标类型显示不同的设置
+		if (this.plugin.settings.targetType === 'wiki') {
+			this.addWikiSettings(containerEl);
+		} else {
+			this.addDriveSettings(containerEl);
+		}
+
 		// 内容处理设置部分
 		containerEl.createEl('h3', { text: '📝 内容处理设置' });
 
@@ -262,22 +290,7 @@ export class FeishuSettingTab extends PluginSettingTab {
 				});
 		}
 
-		// 文件夹设置部分（仅在已授权时显示）
-		if (this.plugin.settings.userInfo) {
-			containerEl.createEl('h3', { text: '📁 默认文件夹' });
 
-			// 当前默认文件夹显示
-			new Setting(containerEl)
-				.setName('当前默认文件夹')
-				.setDesc(`文档将保存到：${this.plugin.settings.defaultFolderName || '我的空间'}${this.plugin.settings.defaultFolderId ? ` (ID: ${this.plugin.settings.defaultFolderId})` : ''}`)
-				.addButton(button => {
-					button
-						.setButtonText('📁 选择文件夹')
-						.onClick(() => {
-							this.showFolderSelectModal();
-						});
-				});
-		}
 
 		// 使用说明部分
 		containerEl.createEl('h3', { text: '📖 使用说明' });
@@ -331,6 +344,7 @@ export class FeishuSettingTab extends PluginSettingTab {
 		permList.createEl('li', { text: 'contact:user.base:readonly - 获取用户基本信息' });
 		permList.createEl('li', { text: 'docx:document - 创建、编辑文档' });
 		permList.createEl('li', { text: 'drive:drive - 访问云空间文件' });
+		permList.createEl('li', { text: 'wiki:wiki - 访问和管理知识库' });
 
 		// 步骤4
 		const step4 = stepsList.createEl('li');
@@ -544,6 +558,99 @@ private startAutoAuth() {
 		} catch (error) {
 			console.error('[Feishu Plugin] Failed to open folder selection modal:', error);
 			new Notice('❌ 打开文件夹选择失败');
+		}
+	}
+
+	/**
+	 * 添加云空间设置
+	 */
+	private addDriveSettings(containerEl: HTMLElement) {
+		if (!this.plugin.settings.userInfo) return;
+
+		containerEl.createEl('h4', { text: '📁 云空间文件夹设置' });
+
+		// 当前默认文件夹显示
+		new Setting(containerEl)
+			.setName('当前默认文件夹')
+			.setDesc(`文档将保存到：${this.plugin.settings.defaultFolderName || '我的空间'}${this.plugin.settings.defaultFolderId ? ` (ID: ${this.plugin.settings.defaultFolderId})` : ''}`)
+			.addButton(button => {
+				button
+					.setButtonText('📁 选择文件夹')
+					.onClick(() => {
+						this.showFolderSelectModal();
+					});
+			});
+	}
+
+	/**
+	 * 添加知识库设置
+	 */
+	private addWikiSettings(containerEl: HTMLElement) {
+		if (!this.plugin.settings.userInfo) return;
+
+		containerEl.createEl('h4', { text: '📚 知识库设置' });
+
+		// 当前知识库位置显示
+		const currentLocation = this.getWikiLocationDescription();
+		new Setting(containerEl)
+			.setName('当前知识库位置')
+			.setDesc(`文档将保存到：${currentLocation}`)
+			.addButton(button => {
+				button
+					.setButtonText('📚 选择知识库位置')
+					.onClick(() => {
+						this.showWikiSelectModal();
+					});
+			});
+	}
+
+	/**
+	 * 获取知识库位置描述
+	 */
+	private getWikiLocationDescription(): string {
+		const spaceName = this.plugin.settings.defaultWikiSpaceName || '未选择知识库';
+		const nodeName = this.plugin.settings.defaultWikiNodeName;
+
+		if (nodeName) {
+			return `${spaceName} / ${nodeName}`;
+		} else {
+			return `${spaceName} (根目录)`;
+		}
+	}
+
+	/**
+	 * 显示知识库选择模态框
+	 */
+	private async showWikiSelectModal() {
+		try {
+			const modal = new WikiSelectModal(
+				this.app,
+				this.plugin.feishuApi,
+				async (space, node) => {
+					if (space) {
+						this.plugin.settings.defaultWikiSpaceId = space.space_id;
+						this.plugin.settings.defaultWikiSpaceName = space.name;
+
+						if (node) {
+							this.plugin.settings.defaultWikiNodeToken = node.node_token;
+							this.plugin.settings.defaultWikiNodeName = node.title;
+						} else {
+							this.plugin.settings.defaultWikiNodeToken = '';
+							this.plugin.settings.defaultWikiNodeName = '';
+						}
+
+						await this.plugin.saveSettings();
+						this.plugin.feishuApi.updateSettings(this.plugin.settings);
+						new Notice('✅ 知识库位置已更新');
+						this.display(); // 刷新界面
+					}
+				}
+			);
+
+			modal.open();
+		} catch (error) {
+			console.error('[Feishu Plugin] Failed to open wiki selection modal:', error);
+			new Notice('❌ 打开知识库选择失败');
 		}
 	}
 }

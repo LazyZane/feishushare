@@ -12,7 +12,7 @@ export const FEISHU_CONFIG = {
 	REFRESH_TOKEN_URL: 'https://open.feishu.cn/open-apis/authen/v2/oauth/token',
 	
 	// API 权限范围（包含offline_access以支持refresh_token）
-	SCOPES: 'contact:user.base:readonly docx:document drive:drive offline_access',
+	SCOPES: 'contact:user.base:readonly docx:document drive:drive wiki:wiki offline_access',
 	
 	// 文件上传相关（使用素材上传API，导入后自动删除源文件）
 	UPLOAD_URL: 'https://open.feishu.cn/open-apis/drive/v1/medias/upload_all',
@@ -34,8 +34,20 @@ export const DEFAULT_SETTINGS: Partial<FeishuSettings> = {
 	accessToken: '',
 	refreshToken: '',
 	userInfo: null,
+
+	// 新增：目标类型默认设置
+	targetType: 'drive',
+
+	// 云空间设置
 	defaultFolderId: '',
 	defaultFolderName: '我的空间',
+
+	// 知识库设置
+	defaultWikiSpaceId: '',
+	defaultWikiSpaceName: '',
+	defaultWikiNodeToken: '',
+	defaultWikiNodeName: '',
+
 	titleSource: 'filename',
 	frontMatterHandling: 'remove',
 	// 新增：链接分享默认设置

@@ -6,11 +6,17 @@ import {
 	FeishuUserInfo,
 	FeishuFileUploadResponse,
 	LocalFileInfo,
+	CalloutInfo,
 	MarkdownProcessResult,
 	FeishuDocBlocksResponse,
 	FeishuBlockCreateResponse,
 	PlaceholderBlock,
-	SubDocumentResult
+	SubDocumentResult,
+	WikiSpace,
+	WikiNode,
+	WikiSpaceListResponse,
+	WikiNodeListResponse,
+	MoveDocToWikiResponse
 } from './types';
 import { FEISHU_CONFIG, FEISHU_ERROR_MESSAGES } from './constants';
 import { Debug } from './debug';
@@ -345,6 +351,28 @@ export class FeishuApiService {
 				throw new Error(errorMsg);
 			}
 
+			// 根据目标类型选择不同的分享流程
+			if (this.settings.targetType === 'wiki') {
+				return await this.shareToWiki(title, processResult, statusNotice, isTemporary);
+			} else {
+				return await this.shareToDrive(title, processResult, statusNotice, isTemporary);
+			}
+
+		} catch (error) {
+			Debug.error('Share markdown error:', error);
+			return {
+				success: false,
+				error: error.message
+			};
+		}
+	}
+
+	/**
+	 * 分享到云空间（原有逻辑）
+	 */
+	private async shareToDrive(title: string, processResult: MarkdownProcessResult, statusNotice?: Notice, isTemporary: boolean = false): Promise<ShareResult> {
+		try {
+
 			// 更新状态：开始上传
 			if (statusNotice) {
 				statusNotice.setMessage('📤 正在上传文件到飞书...');
@@ -373,6 +401,7 @@ export class FeishuApiService {
 					// 第三步：等待导入完成（15秒超时）
 					Debug.log('Step 3: Waiting for import completion (15s timeout)...');
 					const finalResult = await this.waitForImportCompletionWithTimeout(importResult.ticket, 15000);
+					Debug.log(`🔍 IMPORT RESULT DEBUG: success=${finalResult.success}, documentToken=${finalResult.documentToken}`);
 					if (finalResult.success && finalResult.documentToken) {
 						const docUrl = `https://feishu.cn/docx/${finalResult.documentToken}`;
 
@@ -403,8 +432,15 @@ export class FeishuApiService {
 							await Promise.allSettled(parallelTasks);
 						}
 
-						// 第五步：处理子文档和文件上传（如果有本地文件）
-						if (processResult.localFiles.length > 0) {
+						// 第五步：处理子文档和文件上传（如果有本地文件或 Callout 块）
+						const hasLocalFiles = processResult.localFiles.length > 0;
+						const hasCalloutBlocks = processResult.calloutBlocks && processResult.calloutBlocks.length > 0;
+
+						Debug.log(`🔍 NEW MODE DEBUG: hasLocalFiles=${hasLocalFiles}, hasCalloutBlocks=${hasCalloutBlocks}`);
+						Debug.log(`🔍 NEW MODE DEBUG: localFiles.length=${processResult.localFiles.length}`);
+						Debug.log(`🔍 NEW MODE DEBUG: calloutBlocks=`, processResult.calloutBlocks);
+
+						if (hasLocalFiles || hasCalloutBlocks) {
 							try {
 								// 分离子文档和普通文件
 								const subDocuments = processResult.localFiles.filter(f => f.isSubDocument);
@@ -418,12 +454,14 @@ export class FeishuApiService {
 									await this.processSubDocuments(finalResult.documentToken, subDocuments, statusNotice);
 								}
 
-								// 再处理普通文件上传
-								if (regularFiles.length > 0) {
-									if (statusNotice) {
-										statusNotice.setMessage(`📎 正在处理 ${regularFiles.length} 个附件...`);
-									}
-									await this.processFileUploads(finalResult.documentToken, regularFiles, statusNotice);
+								// 再处理普通文件和 Callout 块
+								if (regularFiles.length > 0 || hasCalloutBlocks) {
+									await this.processAllPlaceholders(
+										finalResult.documentToken,
+										regularFiles,
+										processResult.calloutBlocks,
+										statusNotice
+									);
 								}
 							} catch (fileError) {
 								Debug.warn('⚠️ File upload processing failed:', fileError);
@@ -446,6 +484,7 @@ export class FeishuApiService {
 							Debug.log(`📝 Returning source file token for temporary document: ${uploadResult.fileToken}`);
 						}
 
+						Debug.log(`✅ Document creation completed successfully: ${docUrl}`);
 						return result;
 					} else {
 						Debug.warn('⚠️ Import task failed or timed out, falling back to file URL');
@@ -480,6 +519,145 @@ export class FeishuApiService {
 
 		} catch (error) {
 			Debug.error('Share markdown error:', error);
+			return {
+				success: false,
+				error: error.message
+			};
+		}
+	}
+
+	/**
+	 * 分享到知识库（新逻辑）
+	 */
+	private async shareToWiki(title: string, processResult: MarkdownProcessResult, statusNotice?: Notice, isTemporary: boolean = false): Promise<ShareResult> {
+		try {
+			// 更新状态：开始上传
+			if (statusNotice) {
+				statusNotice.setMessage('📤 正在上传文件到飞书云空间...');
+			}
+
+			// 第一步：先上传到云空间（临时）
+			const uploadResult = await this.uploadMarkdownFile(title, processResult.content);
+
+			if (!uploadResult.success) {
+				throw new Error(uploadResult.error || '文件上传失败');
+			}
+
+			if (!uploadResult.fileToken) {
+				throw new Error('文件上传成功但未获取到文件令牌');
+			}
+
+			// 第二步：导入为云文档
+			if (statusNotice) {
+				statusNotice.setMessage('🔄 正在转换为飞书文档...');
+			}
+
+			const cleanTitle = title.endsWith('.md') ? title.slice(0, -3) : title;
+			const importResult = await this.createImportTaskWithCorrectFolder(uploadResult.fileToken, cleanTitle);
+
+			if (!importResult.success || !importResult.ticket) {
+				throw new Error('创建导入任务失败');
+			}
+
+			// 第三步：等待导入完成
+			const finalResult = await this.waitForImportCompletionWithTimeout(importResult.ticket, 15000);
+
+			if (!finalResult.success || !finalResult.documentToken) {
+				throw new Error('文档导入失败或超时');
+			}
+
+			// 第四步：移动到知识库
+			if (statusNotice) {
+				statusNotice.setMessage('📚 正在移动到知识库...');
+			}
+
+			const moveResult = await this.moveDocToWiki(
+				this.settings.defaultWikiSpaceId,
+				finalResult.documentToken,
+				'docx',
+				this.settings.defaultWikiNodeToken || undefined
+			);
+
+			if (!moveResult.success) {
+				// 移动失败，但文档已创建，返回云文档链接作为备选
+				Debug.warn('⚠️ Failed to move to wiki, falling back to cloud document');
+				const docUrl = `https://feishu.cn/docx/${finalResult.documentToken}`;
+				return {
+					success: true,
+					title: cleanTitle,
+					url: docUrl,
+					sourceFileToken: isTemporary ? uploadResult.fileToken : undefined
+				};
+			}
+
+			// 第五步：处理文件上传（如果有本地文件）
+			let finalDocumentToken = finalResult.documentToken;
+			// 始终使用云文档URL，便于后续更新操作
+			let finalUrl = `https://feishu.cn/docx/${finalResult.documentToken}`;
+
+			// 注意：即使移动到知识库成功，我们仍然保存云文档URL
+			// 这样更新文档时可以直接使用云文档API，避免复杂的知识库URL解析
+
+			// 处理本地文件和 Callout 块上传
+			const hasLocalFiles = processResult.localFiles.length > 0;
+			const hasCalloutBlocks = processResult.calloutBlocks && processResult.calloutBlocks.length > 0;
+
+			Debug.log(`🔍 WIKI MODE DEBUG: hasLocalFiles=${hasLocalFiles}, hasCalloutBlocks=${hasCalloutBlocks}`);
+			Debug.log(`🔍 WIKI MODE DEBUG: localFiles.length=${processResult.localFiles.length}`);
+			Debug.log(`🔍 WIKI MODE DEBUG: calloutBlocks=`, processResult.calloutBlocks);
+
+			if (hasLocalFiles || hasCalloutBlocks) {
+				try {
+					// 分离子文档和普通文件
+					const subDocuments = processResult.localFiles.filter(f => f.isSubDocument);
+					const regularFiles = processResult.localFiles.filter(f => !f.isSubDocument);
+
+					// 先处理子文档上传
+					if (subDocuments.length > 0) {
+						if (statusNotice) {
+							statusNotice.setMessage(`📄 正在处理 ${subDocuments.length} 个子文档...`);
+						}
+						await this.processSubDocuments(finalDocumentToken, subDocuments, statusNotice);
+					}
+
+					// 再处理普通文件和 Callout 块
+					if (regularFiles.length > 0 || hasCalloutBlocks) {
+						await this.processAllPlaceholders(
+							finalDocumentToken,
+							regularFiles,
+							processResult.calloutBlocks,
+							statusNotice
+						);
+					}
+				} catch (fileError) {
+					Debug.warn('⚠️ File upload processing failed:', fileError);
+					// 文件上传失败不影响主流程
+				}
+			}
+
+			// 第六步：设置权限（如果启用）
+			if (this.settings.enableLinkShare && finalDocumentToken) {
+				try {
+					if (statusNotice) {
+						statusNotice.setMessage('🔗 正在设置文档分享权限...');
+					}
+					await this.setDocumentSharePermissions(finalDocumentToken, true);
+					Debug.log('✅ Document share permissions set successfully');
+				} catch (permissionError) {
+					Debug.warn('⚠️ Failed to set document share permissions:', permissionError);
+					// 权限设置失败不影响主流程
+				}
+			}
+
+			return {
+				success: true,
+				title: cleanTitle,
+				url: finalUrl,
+				sourceFileToken: isTemporary ? uploadResult.fileToken : undefined
+			};
+
+		} catch (error) {
+			Debug.error('Share to wiki error:', error);
 			return {
 				success: false,
 				error: error.message
@@ -667,6 +845,444 @@ export class FeishuApiService {
 		} catch (error) {
 			Debug.error('Get folder list error:', error);
 			throw error;
+		}
+	}
+
+	/**
+	 * 获取应用访问令牌 (tenant_access_token)
+	 */
+	private async getTenantAccessToken(): Promise<string | null> {
+		try {
+			if (!this.settings.appId || !this.settings.appSecret) {
+				Debug.error('❌ App ID or App Secret not configured');
+				return null;
+			}
+
+			const requestBody = {
+				app_id: this.settings.appId,
+				app_secret: this.settings.appSecret
+			};
+
+			const response = await requestUrl({
+				url: `${FEISHU_CONFIG.BASE_URL}/auth/v3/tenant_access_token/internal`,
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify(requestBody)
+			});
+
+			const data = response.json || JSON.parse(response.text);
+			Debug.log(`📋 Tenant token response:`, data);
+
+			if (data.code === 0) {
+				Debug.log(`✅ Got tenant access token`);
+				return data.tenant_access_token;
+			} else {
+				Debug.error(`❌ Failed to get tenant token - Code: ${data.code}, Message: ${data.msg}`);
+				return null;
+			}
+
+		} catch (error) {
+			Debug.error('❌ Get tenant token error:', error);
+			return null;
+		}
+	}
+
+	/**
+	 * 测试API连接和token有效性
+	 */
+	async testApiConnection(): Promise<{success: boolean, error?: string, userInfo?: any}> {
+		try {
+			if (!this.settings.accessToken) {
+				return { success: false, error: 'No access token available' };
+			}
+
+			Debug.log(`🧪 Testing API connection with user info endpoint`);
+
+			const response = await requestUrl({
+				url: FEISHU_CONFIG.USER_INFO_URL,
+				method: 'GET',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				}
+			});
+
+			Debug.log(`📥 User info response status: ${response.status}`);
+			Debug.log(`📥 User info response:`, response.json);
+
+			const data = response.json || JSON.parse(response.text);
+
+			if (data.code === 0) {
+				return { success: true, userInfo: data.data };
+			} else {
+				return { success: false, error: `API Error: ${data.code} - ${data.msg}` };
+			}
+
+		} catch (error) {
+			Debug.error('❌ API connection test failed:', error);
+			return { success: false, error: error.message };
+		}
+	}
+
+	/**
+	 * 获取知识空间列表
+	 */
+	async getWikiSpaceList(): Promise<WikiSpace[]> {
+		try {
+			// 首先尝试使用用户token
+			let token: string | null = this.settings.accessToken;
+			let tokenType = 'user';
+
+			Debug.log(`🔍 Initial token check - User token available: ${!!token}`);
+			if (token) {
+				Debug.log(`🔑 User token preview: ${token.substring(0, 20)}...`);
+			}
+
+			if (!token) {
+				Debug.log('🔍 No user token, trying tenant token...');
+				token = await this.getTenantAccessToken();
+				tokenType = 'tenant';
+				if (token) {
+					Debug.log(`🔑 Tenant token preview: ${token.substring(0, 20)}...`);
+				}
+			}
+
+			if (!token) {
+				Debug.error('❌ No valid token available');
+				throw new Error('无法获取有效的访问令牌，请重新授权');
+			}
+
+			Debug.log(`✅ Using ${tokenType} token for API call`);
+
+			// 先测试API连接
+			if (tokenType === 'user') {
+				Debug.log(`🧪 Testing API connection before wiki call...`);
+				const testResult = await this.testApiConnection();
+				Debug.log(`🧪 API test result:`, testResult);
+
+				if (!testResult.success) {
+					Debug.error(`❌ API connection test failed: ${testResult.error}`);
+					// 继续尝试，但记录错误
+				} else {
+					Debug.log(`✅ API connection test passed`);
+				}
+			}
+
+			const url = `${FEISHU_CONFIG.BASE_URL}/wiki/v2/spaces`;
+			const params = new URLSearchParams({
+				page_size: '50'
+			});
+
+			Debug.log(`🔍 Calling wiki API: ${url}?${params.toString()}`);
+			Debug.log(`🔑 Using ${tokenType} token: ${token.substring(0, 20)}...`);
+
+			// 使用更详细的错误捕获
+			let response: any;
+			let responseData: any;
+
+			try {
+				Debug.log(`🚀 Making request to: ${url}?${params.toString()}`);
+				Debug.log(`🔑 Authorization header: Bearer ${token.substring(0, 10)}...`);
+
+				response = await requestUrl({
+					url: `${url}?${params.toString()}`,
+					method: 'GET',
+					headers: {
+						'Authorization': `Bearer ${token}`,
+						'Content-Type': 'application/json'
+					}
+				});
+
+				Debug.log(`📥 Response received - Status: ${response.status}`);
+				Debug.log(`📥 Response headers:`, response.headers);
+				Debug.log(`📥 Response text:`, response.text);
+				Debug.log(`📥 Response json:`, response.json);
+
+				responseData = response.json || JSON.parse(response.text);
+				Debug.log(`📋 Parsed response data:`, responseData);
+
+			} catch (requestError) {
+				Debug.error(`❌ Request failed with error:`, requestError);
+				Debug.error(`❌ Error type: ${typeof requestError}`);
+				Debug.error(`❌ Error constructor: ${requestError.constructor.name}`);
+
+				// 检查错误对象的所有属性
+				for (const key in requestError) {
+					Debug.log(`❌ Error.${key}:`, requestError[key]);
+				}
+
+				// 尝试获取响应体内容
+				if (requestError.status === 400 && requestError.headers) {
+					Debug.log(`🔍 Attempting to extract response body from 400 error...`);
+
+					// 对于400错误，Obsidian的requestUrl可能会将响应体放在不同的地方
+					// 让我们尝试直接重新发送请求来获取响应体
+					try {
+						const errorResponse = await fetch(`${url}?${params.toString()}`, {
+							method: 'GET',
+							headers: {
+								'Authorization': `Bearer ${token}`,
+								'Content-Type': 'application/json'
+							}
+						});
+
+						const errorText = await errorResponse.text();
+						Debug.log(`🔍 Fetch response status: ${errorResponse.status}`);
+						Debug.log(`🔍 Fetch response text: ${errorText}`);
+
+						if (errorText) {
+							try {
+								const errorData = JSON.parse(errorText);
+								Debug.log(`🔍 Parsed error data from fetch:`, errorData);
+							} catch (parseError) {
+								Debug.log(`🔍 Failed to parse fetch response as JSON:`, parseError);
+							}
+						}
+					} catch (fetchError) {
+						Debug.log(`🔍 Fetch attempt failed:`, fetchError);
+					}
+				}
+
+				throw requestError;
+			}
+
+			const data: WikiSpaceListResponse = responseData;
+
+			if (data.code === 0) {
+				Debug.log(`✅ Successfully got ${data.data.items.length} wiki spaces`);
+				return data.data.items;
+			} else {
+				Debug.error(`❌ Wiki API error - Code: ${data.code}, Message: ${data.msg}`);
+
+				// 如果使用用户token失败，尝试应用token
+				if (tokenType === 'user') {
+					Debug.log('🔄 User token failed, trying tenant token...');
+					const tenantToken = await this.getTenantAccessToken();
+					if (tenantToken) {
+						const retryResponse = await requestUrl({
+							url: `${url}?${params.toString()}`,
+							method: 'GET',
+							headers: {
+								'Authorization': `Bearer ${tenantToken}`,
+								'Content-Type': 'application/json'
+							}
+						});
+
+						const retryData: WikiSpaceListResponse = retryResponse.json || JSON.parse(retryResponse.text);
+						if (retryData.code === 0) {
+							Debug.log(`✅ Successfully got ${retryData.data.items.length} wiki spaces with tenant token`);
+							return retryData.data.items;
+						}
+					}
+				}
+
+				throw new Error(data.msg || '获取知识空间列表失败');
+			}
+
+		} catch (error) {
+			Debug.error('❌ Get wiki space list error:', error);
+
+			// 尝试解析更详细的错误信息
+			let errorMessage = 'Unknown error';
+			let errorCode: string | number = 'Unknown';
+			let responseText = '';
+			let errorData: any = null;
+			let fullErrorInfo = '';
+
+			try {
+				// 记录完整的错误对象信息
+				fullErrorInfo = JSON.stringify(error, Object.getOwnPropertyNames(error), 2);
+				Debug.error(`❌ Complete error object: ${fullErrorInfo}`);
+
+				if (error.message) {
+					errorMessage = error.message;
+				}
+
+				// 检查是否有status信息
+				if (error.status) {
+					errorCode = error.status;
+				}
+
+				// 对于Obsidian的requestUrl，错误响应可能直接在error对象中
+				if (error.text) {
+					responseText = error.text;
+					Debug.log(`📥 Error response text from error.text: ${responseText}`);
+				}
+
+				if (error.json) {
+					errorData = error.json;
+					responseText = JSON.stringify(errorData);
+					Debug.log(`📥 Error response json from error.json:`, errorData);
+
+					if (errorData.code) {
+						errorCode = errorData.code;
+					}
+					if (errorData.msg || errorData.message) {
+						errorMessage = errorData.msg || errorData.message;
+					}
+				}
+
+				// 如果是requestUrl的错误，尝试从响应中获取更多信息
+				if (error.response) {
+					responseText = error.response.text || error.response.data || '';
+					Debug.log(`📥 Error response text from error.response: ${responseText}`);
+
+					if (responseText && !errorData) {
+						try {
+							errorData = JSON.parse(responseText);
+							errorCode = errorData.code || errorCode;
+							errorMessage = errorData.msg || errorData.message || errorMessage;
+							Debug.log(`📋 Parsed error data from response:`, errorData);
+						} catch (parseError) {
+							Debug.log('Failed to parse error response:', parseError);
+						}
+					}
+				}
+
+				// 尝试从错误消息中提取更多信息
+				if (errorMessage.includes('Request failed, status')) {
+					const statusMatch = errorMessage.match(/status (\d+)/);
+					if (statusMatch) {
+						errorCode = parseInt(statusMatch[1]);
+						Debug.log(`📋 Extracted status code from message: ${errorCode}`);
+					}
+				}
+
+			} catch (parseError) {
+				Debug.log('Error parsing error details:', parseError);
+			}
+
+			Debug.error(`❌ Final Error Summary:`);
+			Debug.error(`   - Code: ${errorCode}`);
+			Debug.error(`   - Message: ${errorMessage}`);
+			Debug.error(`   - Response Text: ${responseText}`);
+			Debug.error(`   - Error Data: ${errorData ? JSON.stringify(errorData) : 'null'}`);
+
+			// 提供更详细的错误信息
+			const isPermissionError = errorMessage.includes('400') ||
+									  errorCode === '400' ||
+									  errorCode === 400 ||
+									  errorCode === '131006' ||
+									  errorMessage.includes('permission') ||
+									  errorMessage.includes('权限');
+
+			if (isPermissionError) {
+				throw new Error(`获取知识库列表失败 (错误码: ${errorCode})：\n${errorMessage}\n\n可能的解决方案：\n1. 检查应用是否已申请知识库相关权限（wiki:wiki 或 wiki:wiki.readonly）\n2. 确认应用已被添加为知识库成员或管理员\n3. 验证App ID和App Secret配置是否正确\n4. 检查应用是否已正确发布\n5. 详细配置方法请参考飞书开发文档\n\n调试信息：\n- 响应文本: ${responseText}\n- 错误数据: ${errorData ? JSON.stringify(errorData, null, 2) : 'null'}\n- 完整错误: ${fullErrorInfo}`);
+			}
+
+			throw new Error(`获取知识库列表失败：${errorMessage} (错误码: ${errorCode})\n\n调试信息：\n- 响应文本: ${responseText}\n- 完整错误: ${fullErrorInfo}`);
+		}
+	}
+
+	/**
+	 * 获取知识库节点列表
+	 */
+	async getWikiNodeList(spaceId: string, parentNodeToken?: string): Promise<WikiNode[]> {
+		try {
+			// 确保token有效
+			const tokenValid = await this.ensureValidToken();
+			if (!tokenValid) {
+				throw new Error('Token无效，请重新授权');
+			}
+
+			const url = `${FEISHU_CONFIG.BASE_URL}/wiki/v2/spaces/${spaceId}/nodes`;
+			const params = new URLSearchParams({
+				page_size: '50'
+			});
+
+			if (parentNodeToken) {
+				params.append('parent_node_token', parentNodeToken);
+			}
+
+			const response = await requestUrl({
+				url: `${url}?${params.toString()}`,
+				method: 'GET',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				}
+			});
+
+			const data: WikiNodeListResponse = response.json || JSON.parse(response.text);
+
+			if (data.code === 0) {
+				return data.data.items;
+			} else {
+				throw new Error(data.msg || '获取知识库节点列表失败');
+			}
+
+		} catch (error) {
+			Debug.error('Get wiki node list error:', error);
+
+			// 提供更详细的错误信息
+			if (error.message && error.message.includes('400')) {
+				throw new Error('获取知识库节点列表失败：权限不足。请确保：\n1. 应用已申请知识库相关权限（wiki:wiki 或 wiki:wiki.readonly）\n2. 应用已被添加为知识库成员或管理员\n3. 详细配置方法请参考飞书开发文档');
+			}
+
+			throw error;
+		}
+	}
+
+	/**
+	 * 将云文档移动到知识库
+	 */
+	async moveDocToWiki(
+		spaceId: string,
+		objToken: string,
+		objType: string,
+		parentNodeToken?: string
+	): Promise<{success: boolean, wikiToken?: string, taskId?: string, error?: string}> {
+		try {
+			// 确保token有效
+			const tokenValid = await this.ensureValidToken();
+			if (!tokenValid) {
+				throw new Error('Token无效，请重新授权');
+			}
+
+			const url = `${FEISHU_CONFIG.BASE_URL}/wiki/v2/spaces/${spaceId}/nodes/move_docs_to_wiki`;
+
+			const requestData: any = {
+				obj_type: objType,
+				obj_token: objToken
+			};
+
+			if (parentNodeToken) {
+				requestData.parent_wiki_token = parentNodeToken;
+			}
+
+			const response = await requestUrl({
+				url: url,
+				method: 'POST',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify(requestData)
+			});
+
+			const data: MoveDocToWikiResponse = response.json || JSON.parse(response.text);
+
+			if (data.code === 0) {
+				return {
+					success: true,
+					wikiToken: data.data.wiki_token,
+					taskId: data.data.task_id
+				};
+			} else {
+				return {
+					success: false,
+					error: data.msg || '移动文档到知识库失败'
+				};
+			}
+
+		} catch (error) {
+			Debug.error('Move doc to wiki error:', error);
+			return {
+				success: false,
+				error: error.message
+			};
 		}
 	}
 
@@ -1414,17 +2030,24 @@ export class FeishuApiService {
 	/**
 	 * 查找文档中的占位符文本块（优化版本）
 	 */
-	private async findPlaceholderBlocks(documentId: string, localFiles: LocalFileInfo[]): Promise<PlaceholderBlock[]> {
+	private async findPlaceholderBlocks(documentId: string, localFiles: LocalFileInfo[], calloutBlocks?: CalloutInfo[]): Promise<PlaceholderBlock[]> {
 		try {
 			const placeholderBlocks: PlaceholderBlock[] = [];
 			let pageToken = '';
 			let hasMore = true;
 
 			// 预编译占位符模式（方案3：智能搜索优化）
-			const placeholderPatterns = this.compilePlaceholderPatterns(localFiles);
-			const remainingPlaceholders = new Set(localFiles.map(f => f.placeholder));
+			const placeholderPatterns = this.compilePlaceholderPatterns(localFiles, calloutBlocks);
 
-			Debug.log(`🔍 Searching for ${remainingPlaceholders.size} placeholders in document...`);
+			// 收集所有占位符（文件 + Callout）
+			const allPlaceholders = [
+				...localFiles.map(f => f.placeholder),
+				...(calloutBlocks?.map(c => c.placeholder) || [])
+			];
+			const remainingPlaceholders = new Set(allPlaceholders);
+			const totalPlaceholders = allPlaceholders.length;
+
+			Debug.log(`🔍 Searching for ${remainingPlaceholders.size} placeholders in document (${localFiles.length} files + ${calloutBlocks?.length || 0} callouts)...`);
 
 			while (hasMore && remainingPlaceholders.size > 0) { // 方案1：早期退出
 				// 构建查询参数
@@ -1461,7 +2084,7 @@ export class FeishuApiService {
 
 				// 方案1：早期退出 - 所有占位符都找到了就停止
 				if (remainingPlaceholders.size === 0) {
-					Debug.log(`✅ All ${localFiles.length} placeholders found, stopping search early`);
+					Debug.log(`✅ All ${totalPlaceholders} placeholders found, stopping search early`);
 					break;
 				}
 
@@ -1469,7 +2092,7 @@ export class FeishuApiService {
 				pageToken = data.data.page_token;
 			}
 
-			Debug.log(`🎯 Found ${placeholderBlocks.length}/${localFiles.length} placeholder blocks`);
+			Debug.log(`🎯 Found ${placeholderBlocks.length}/${totalPlaceholders} placeholder blocks`);
 			return placeholderBlocks;
 
 		} catch (error) {
@@ -1481,9 +2104,10 @@ export class FeishuApiService {
 	/**
 	 * 预编译占位符模式（方案3优化）
 	 */
-	private compilePlaceholderPatterns(localFiles: LocalFileInfo[]): Map<string, {fileInfo: LocalFileInfo, patterns: RegExp[]}> {
-		const patterns = new Map<string, {fileInfo: LocalFileInfo, patterns: RegExp[]}>();
+	private compilePlaceholderPatterns(localFiles: LocalFileInfo[], calloutBlocks?: CalloutInfo[]): Map<string, {fileInfo?: LocalFileInfo, calloutInfo?: CalloutInfo, patterns: RegExp[]}> {
+		const patterns = new Map<string, {fileInfo?: LocalFileInfo, calloutInfo?: CalloutInfo, patterns: RegExp[]}>();
 
+		// 处理文件占位符
 		localFiles.forEach(fileInfo => {
 			const placeholder = fileInfo.placeholder;
 			const cleanPlaceholder = placeholder.replace(/^__/, '').replace(/__$/, '');
@@ -1501,6 +2125,26 @@ export class FeishuApiService {
 			});
 		});
 
+		// 处理 Callout 占位符
+		if (calloutBlocks) {
+			calloutBlocks.forEach(calloutInfo => {
+				const placeholder = calloutInfo.placeholder;
+				const cleanPlaceholder = placeholder.replace(/^__/, '').replace(/__$/, '');
+
+				// 预编译所有可能的占位符格式的正则表达式
+				const regexPatterns = [
+					new RegExp(this.escapeRegExp(placeholder)), // 原始格式
+					new RegExp(this.escapeRegExp(`!${cleanPlaceholder}`)), // 飞书处理后格式
+					new RegExp(this.escapeRegExp(cleanPlaceholder)) // 清理后格式
+				];
+
+				patterns.set(placeholder, {
+					calloutInfo,
+					patterns: regexPatterns
+				});
+			});
+		}
+
 		return patterns;
 	}
 
@@ -1509,7 +2153,7 @@ export class FeishuApiService {
 	 */
 	private searchPlaceholdersInBlocks(
 		blocks: any[],
-		placeholderPatterns: Map<string, {fileInfo: LocalFileInfo, patterns: RegExp[]}>,
+		placeholderPatterns: Map<string, {fileInfo?: LocalFileInfo, calloutInfo?: CalloutInfo, patterns: RegExp[]}>,
 		remainingPlaceholders: Set<string>
 	): PlaceholderBlock[] {
 		const foundBlocks: PlaceholderBlock[] = [];
@@ -1550,13 +2194,22 @@ export class FeishuApiService {
 				if (isMatch) {
 					Debug.log(`✅ Found placeholder: "${placeholder}" in block ${block.block_id}`);
 
-					foundBlocks.push({
+					const placeholderBlock: PlaceholderBlock = {
 						blockId: block.block_id,
 						parentId: block.parent_id,
 						index: blockIndex,
-						placeholder: placeholder,
-						fileInfo: patternInfo.fileInfo
-					});
+						placeholder: placeholder
+					};
+
+					// 根据类型添加相应的信息
+					if (patternInfo.fileInfo) {
+						placeholderBlock.fileInfo = patternInfo.fileInfo;
+					}
+					if (patternInfo.calloutInfo) {
+						placeholderBlock.calloutInfo = patternInfo.calloutInfo;
+					}
+
+					foundBlocks.push(placeholderBlock);
 
 					// 从剩余列表中移除已找到的占位符
 					remainingPlaceholders.delete(placeholder);
@@ -1620,10 +2273,394 @@ export class FeishuApiService {
 	}
 
 	/**
+	 * 在占位符位置插入 Callout 块（简化版本，避免复杂重试逻辑）
+	 */
+	private async insertCalloutBlock(documentId: string, placeholderBlock: PlaceholderBlock): Promise<string> {
+		if (!placeholderBlock.calloutInfo) {
+			throw new Error('Callout 信息缺失');
+		}
+
+		const calloutInfo = placeholderBlock.calloutInfo;
+		Debug.log(`🎨 Creating Callout block: ${calloutInfo.type}`);
+		Debug.log(`📍 Position: parentId=${placeholderBlock.parentId}, index=${placeholderBlock.index}`);
+		Debug.log(`🎨 Style: bg=${calloutInfo.backgroundColor}, border=${calloutInfo.borderColor}, text=${calloutInfo.textColor}`);
+		Debug.log(`📝 Content: title="${calloutInfo.title}", content="${calloutInfo.content}"`);
+		Debug.log(`🔗 Placeholder: ${calloutInfo.placeholder}`);
+
+		try {
+			// 创建 Callout Block (Block Type 19)
+			const requestData = {
+				index: placeholderBlock.index,
+				children: [{
+					block_type: 19, // callout
+					callout: {
+						background_color: calloutInfo.backgroundColor,
+						border_color: calloutInfo.borderColor,
+						text_color: calloutInfo.textColor
+					}
+				}]
+			};
+
+			Debug.log(`🌐 API Request: POST ${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${placeholderBlock.parentId}/children`);
+			Debug.log(`📤 Request body:`, JSON.stringify(requestData, null, 2));
+
+			const response = await requestUrl({
+				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${placeholderBlock.parentId}/children`,
+				method: 'POST',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify(requestData)
+			});
+
+			Debug.log(`📥 API Response status: ${response.status}`);
+			const data: FeishuBlockCreateResponse = response.json || JSON.parse(response.text);
+			Debug.log(`📥 API Response data:`, JSON.stringify(data, null, 2));
+
+			if (data.code !== 0) {
+				Debug.error(`❌ Callout block creation failed: code=${data.code}, msg=${data.msg}`);
+				throw new Error(data.msg || '插入 Callout 块失败');
+			}
+
+			const calloutBlockId = data.data.children[0].block_id;
+			Debug.log(`✅ Created Callout block: ${calloutBlockId}`);
+
+			// 添加延迟避免频率限制
+			await new Promise(resolve => setTimeout(resolve, 500));
+
+			// 在 Callout Block 内添加标题和内容（简化版本）
+			Debug.log(`🔍 NEW MODE: About to call addCalloutContentSimple for Callout: ${calloutInfo.type}`);
+			await this.addCalloutContentSimple(documentId, calloutBlockId, calloutInfo);
+
+			return calloutBlockId;
+
+		} catch (error) {
+			Debug.error('Insert Callout block error:', error);
+			throw error;
+		}
+	}
+
+	/**
+	 * 在 Callout 块内添加标题和内容（简化版本）
+	 */
+	private async addCalloutContentSimple(documentId: string, calloutBlockId: string, calloutInfo: CalloutInfo): Promise<void> {
+		try {
+			// 创建标题文本块
+			const titleRequestData = {
+				index: 0,
+				children: [{
+					block_type: 2, // 文本块
+					text: {
+						elements: [{
+							text_run: {
+								content: calloutInfo.title,
+								text_element_style: {
+									bold: true
+								}
+							}
+						}]
+					}
+				}]
+			};
+
+			Debug.log(`📝 Adding title to Callout block: ${calloutBlockId}`);
+			const titleResponse = await requestUrl({
+				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${calloutBlockId}/children`,
+				method: 'POST',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify(titleRequestData)
+			});
+
+			const titleData = titleResponse.json || JSON.parse(titleResponse.text);
+			if (titleData.code !== 0) {
+				throw new Error(titleData.msg || '添加标题失败');
+			}
+			Debug.log(`✅ Successfully added title to Callout block`);
+
+			// 如果有内容，添加内容文本块
+			if (calloutInfo.content.trim()) {
+				// 添加延迟避免频率限制
+				await new Promise(resolve => setTimeout(resolve, 800));
+
+				// 解析 Markdown 内容为富文本元素
+				Debug.log(`🎨 Original Markdown content: "${calloutInfo.content}"`);
+				const contentElements = this.parseMarkdownToTextElements(calloutInfo.content);
+				Debug.log(`🎨 Parsed ${contentElements.length} text elements from Markdown content`);
+				Debug.log(`🎨 Parsed elements:`, JSON.stringify(contentElements, null, 2));
+
+				const contentRequestData = {
+					index: 1,
+					children: [{
+						block_type: 2, // 文本块
+						text: {
+							elements: contentElements
+						}
+					}]
+				};
+
+				Debug.log(`📝 Adding content to Callout block: ${calloutBlockId}`);
+				const contentResponse = await requestUrl({
+					url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${calloutBlockId}/children`,
+					method: 'POST',
+					headers: {
+						'Authorization': `Bearer ${this.settings.accessToken}`,
+						'Content-Type': 'application/json'
+					},
+					body: JSON.stringify(contentRequestData)
+				});
+
+				const contentData = contentResponse.json || JSON.parse(contentResponse.text);
+				if (contentData.code !== 0) {
+					throw new Error(contentData.msg || '添加内容失败');
+				}
+				Debug.log(`✅ Successfully added content to Callout block`);
+			}
+
+			Debug.log(`✅ Added content to Callout block: ${calloutBlockId}`);
+
+		} catch (error) {
+			Debug.error('Add Callout content error:', error);
+			throw error;
+		}
+	}
+
+	/**
+	 * 解析 Markdown 文本为飞书富文本元素
+	 */
+	private parseMarkdownToTextElements(markdown: string): any[] {
+		const elements: any[] = [];
+
+		// 简单的 Markdown 解析器
+		// 支持：**粗体**、*斜体*、`代码`、~~删除线~~
+
+		let currentIndex = 0;
+		const text = markdown;
+
+		while (currentIndex < text.length) {
+			// 查找下一个格式标记
+			const boldMatch = text.substring(currentIndex).match(/^\*\*(.*?)\*\*/);
+			const italicMatch = text.substring(currentIndex).match(/^\*(.*?)\*/);
+			const codeMatch = text.substring(currentIndex).match(/^`(.*?)`/);
+			const strikeMatch = text.substring(currentIndex).match(/^~~(.*?)~~/);
+
+			if (boldMatch) {
+				// 粗体
+				elements.push({
+					text_run: {
+						content: boldMatch[1],
+						text_element_style: {
+							bold: true
+						}
+					}
+				});
+				currentIndex += boldMatch[0].length;
+			} else if (italicMatch && !text.substring(currentIndex).startsWith('**')) {
+				// 斜体（确保不是粗体的一部分）
+				elements.push({
+					text_run: {
+						content: italicMatch[1],
+						text_element_style: {
+							italic: true
+						}
+					}
+				});
+				currentIndex += italicMatch[0].length;
+			} else if (codeMatch) {
+				// 行内代码
+				elements.push({
+					text_run: {
+						content: codeMatch[1],
+						text_element_style: {
+							inline_code: true
+						}
+					}
+				});
+				currentIndex += codeMatch[0].length;
+			} else if (strikeMatch) {
+				// 删除线
+				elements.push({
+					text_run: {
+						content: strikeMatch[1],
+						text_element_style: {
+							strikethrough: true
+						}
+					}
+				});
+				currentIndex += strikeMatch[0].length;
+			} else {
+				// 普通文本，查找到下一个格式标记或字符串结尾
+				let nextFormatIndex = text.length;
+				const nextBold = text.indexOf('**', currentIndex);
+				const nextItalic = text.indexOf('*', currentIndex);
+				const nextCode = text.indexOf('`', currentIndex);
+				const nextStrike = text.indexOf('~~', currentIndex);
+
+				[nextBold, nextItalic, nextCode, nextStrike].forEach(index => {
+					if (index !== -1 && index < nextFormatIndex) {
+						nextFormatIndex = index;
+					}
+				});
+
+				const plainText = text.substring(currentIndex, nextFormatIndex);
+				if (plainText) {
+					elements.push({
+						text_run: {
+							content: plainText
+						}
+					});
+				}
+				currentIndex = nextFormatIndex;
+			}
+		}
+
+		return elements;
+	}
+
+	/**
+	 * 在 Callout 块内添加标题和内容（带重试机制）
+	 */
+	private async addCalloutContent(documentId: string, calloutBlockId: string, calloutInfo: CalloutInfo): Promise<void> {
+		// 创建标题文本块
+		await this.addCalloutContentWithRetry(documentId, calloutBlockId, {
+			index: 0,
+			children: [{
+				block_type: 2, // 文本块
+				text: {
+					elements: [{
+						text_run: {
+							content: calloutInfo.title,
+							text_element_style: {
+								bold: true
+							}
+						}
+					}]
+				}
+			}]
+		}, 'title');
+
+		// 如果有内容，添加内容文本块
+		if (calloutInfo.content.trim()) {
+			// 添加延迟避免频率限制
+			const delay = 800; // 800ms延迟
+			Debug.log(`⏱️ Waiting ${delay}ms before adding content...`);
+			await new Promise(resolve => setTimeout(resolve, delay));
+
+			// 解析 Markdown 内容为富文本元素
+			Debug.log(`🎨 Original Markdown content: "${calloutInfo.content}"`);
+			const contentElements = this.parseMarkdownToTextElements(calloutInfo.content);
+			Debug.log(`🎨 Parsed ${contentElements.length} text elements from Markdown content`);
+			Debug.log(`🎨 Parsed elements:`, JSON.stringify(contentElements, null, 2));
+
+			await this.addCalloutContentWithRetry(documentId, calloutBlockId, {
+				index: 1,
+				children: [{
+					block_type: 2, // 文本块
+					text: {
+						elements: contentElements
+					}
+				}]
+			}, 'content');
+		}
+
+		Debug.log(`✅ Added content to Callout block: ${calloutBlockId}`);
+	}
+
+	/**
+	 * 添加 Callout 内容的重试方法
+	 */
+	private async addCalloutContentWithRetry(
+		documentId: string,
+		calloutBlockId: string,
+		requestData: any,
+		contentType: string
+	): Promise<void> {
+		const maxRetries = 3;
+		let lastError: Error | null = null;
+
+		for (let attempt = 1; attempt <= maxRetries; attempt++) {
+			try {
+				if (attempt > 1) {
+					const delay = Math.min(2000 * Math.pow(2, attempt - 1), 10000); // 指数退避，最大10秒
+					Debug.log(`⏱️ Waiting ${delay}ms before retry attempt ${attempt} for ${contentType}...`);
+					await new Promise(resolve => setTimeout(resolve, delay));
+				}
+
+				Debug.log(`📝 Adding ${contentType} to Callout block (attempt ${attempt}/${maxRetries}): ${calloutBlockId}`);
+
+				const response = await requestUrl({
+					url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${calloutBlockId}/children`,
+					method: 'POST',
+					headers: {
+						'Authorization': `Bearer ${this.settings.accessToken}`,
+						'Content-Type': 'application/json'
+					},
+					body: JSON.stringify(requestData)
+				});
+
+				const data = response.json || JSON.parse(response.text);
+
+				if (data.code !== 0) {
+					throw new Error(data.msg || `添加 ${contentType} 失败`);
+				}
+
+				Debug.log(`✅ Successfully added ${contentType} to Callout block`);
+				return; // 成功，退出重试循环
+
+			} catch (error) {
+				lastError = error instanceof Error ? error : new Error(String(error));
+				Debug.warn(`⚠️ Add ${contentType} attempt ${attempt} failed:`, lastError.message);
+
+				// 检查是否是频率限制错误
+				if (lastError.message.includes('429') && attempt < maxRetries) {
+					// 尝试从响应头获取重置时间
+					const resetTime = this.extractRateLimitReset(error);
+					if (resetTime > 0) {
+						Debug.log(`🔄 Rate limit detected, will wait ${resetTime}s as suggested by server...`);
+						await new Promise(resolve => setTimeout(resolve, resetTime * 1000));
+					}
+					continue;
+				}
+
+				// 如果不是频率限制错误或已达到最大重试次数，抛出错误
+				if (attempt === maxRetries) {
+					Debug.error(`❌ All ${maxRetries} attempts failed for adding ${contentType} to Callout block`);
+					throw lastError;
+				}
+			}
+		}
+	}
+
+	/**
+	 * 从错误响应中提取频率限制重置时间
+	 */
+	private extractRateLimitReset(error: any): number {
+		try {
+			// 尝试从错误对象中提取响应头信息
+			if (error && error.headers && error.headers['x-ogw-ratelimit-reset']) {
+				const resetTime = parseInt(error.headers['x-ogw-ratelimit-reset']);
+				if (!isNaN(resetTime) && resetTime > 0) {
+					return Math.min(resetTime, 60); // 最大等待60秒
+				}
+			}
+		} catch (e) {
+			Debug.warn('Failed to extract rate limit reset time:', e);
+		}
+		return 0; // 如果无法提取，返回0
+	}
+
+	/**
 	 * 在占位符位置插入文件块或图片块
 	 */
 	private async insertFileBlock(documentId: string, placeholderBlock: PlaceholderBlock): Promise<string> {
 		try {
+			if (!placeholderBlock.fileInfo) {
+				throw new Error('文件信息缺失');
+			}
+
 			const blockType = placeholderBlock.fileInfo.isImage ? 27 : 23; // 27=图片块, 23=文件块
 			const blockContent = placeholderBlock.fileInfo.isImage ? { image: {} } : { file: {} };
 
@@ -2021,17 +3058,102 @@ export class FeishuApiService {
 	}
 
 	/**
-	 * 删除占位符文本块（备用方法）
+	 * 批量删除占位符文本块（带延迟避免频率限制）
 	 */
-	private async deletePlaceholderBlock(documentId: string, placeholderBlock: PlaceholderBlock): Promise<void> {
+	private async batchDeletePlaceholderBlocks(documentId: string, placeholderBlocks: PlaceholderBlock[]): Promise<void> {
+		Debug.log(`🗑️ Batch deleting ${placeholderBlocks.length} placeholder blocks...`);
+
+		for (let i = 0; i < placeholderBlocks.length; i++) {
+			const placeholderBlock = placeholderBlocks[i];
+
+			try {
+				// 在删除操作之间添加延迟以避免频率限制
+				if (i > 0) {
+					const delay = 500; // 500ms延迟
+					Debug.log(`⏱️ Waiting ${delay}ms between deletions...`);
+					await new Promise(resolve => setTimeout(resolve, delay));
+				}
+
+				await this.deletePlaceholderBlock(documentId, placeholderBlock);
+				Debug.log(`✅ Deleted placeholder block: ${placeholderBlock.blockId}`);
+			} catch (error) {
+				Debug.error(`❌ Failed to delete placeholder block ${placeholderBlock.blockId}:`, error);
+				// 继续删除其他块，不中断整个流程
+			}
+		}
+	}
+
+	/**
+	 * 通过占位符文本删除块（更精确的方法）
+	 */
+	private async deleteBlockByPlaceholderText(documentId: string, placeholderText: string): Promise<void> {
 		try {
+			Debug.log(`🔍 Searching for block containing placeholder text: ${placeholderText}`);
+
+			// 获取文档所有块
+			const allBlocks = await this.getAllDocumentBlocks(documentId);
+
+			// 查找包含占位符文本的块
+			let targetBlock: any = null;
+			let targetParentId: string = '';
+			let targetIndex: number = -1;
+
+			Debug.log(`🔍 Analyzing ${allBlocks.length} blocks for placeholder text...`);
+
+			for (const block of allBlocks) {
+				if (block.block_type === 2 && block.text && block.text.elements) { // 文本块
+					Debug.log(`📄 Checking text block: ${block.block_id}, elements: ${block.text.elements.length}`);
+
+					// 收集所有文本内容
+					let fullText = '';
+					for (const element of block.text.elements) {
+						if (element.text_run && element.text_run.content) {
+							fullText += element.text_run.content;
+							Debug.log(`📝 Text element: "${element.text_run.content}"`);
+						}
+					}
+
+					Debug.log(`📄 Full text content: "${fullText}"`);
+
+					// 检查完整文本是否包含占位符（去掉前后的下划线）
+					const cleanPlaceholderText = placeholderText.replace(/^__/, '').replace(/__$/, '');
+					Debug.log(`🔍 Comparing: "${fullText}" contains "${cleanPlaceholderText}"?`);
+
+					if (fullText.includes(cleanPlaceholderText)) {
+						Debug.log(`🎯 Found placeholder in block: ${block.block_id}`);
+						targetBlock = block;
+						targetParentId = block.parent_id;
+						break;
+					}
+				}
+			}
+
+			if (!targetBlock) {
+				Debug.warn(`⚠️ Placeholder text not found: ${placeholderText}`);
+				return;
+			}
+
+			// 找到目标块在父块中的索引
+			const parentBlock = allBlocks.find(b => b.block_id === targetParentId);
+			if (parentBlock && parentBlock.children) {
+				targetIndex = parentBlock.children.indexOf(targetBlock.block_id);
+			}
+
+			if (targetIndex === -1) {
+				Debug.warn(`⚠️ Could not find index for block: ${targetBlock.block_id}`);
+				return;
+			}
+
+			Debug.log(`🎯 Found placeholder block: ${targetBlock.block_id} at index ${targetIndex} in parent ${targetParentId}`);
+
+			// 删除块
 			const requestData = {
-				start_index: placeholderBlock.index,
-				end_index: placeholderBlock.index + 1
+				start_index: targetIndex,
+				end_index: targetIndex + 1
 			};
 
 			const response = await requestUrl({
-				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${placeholderBlock.parentId}/children/batch_delete`,
+				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${targetParentId}/children/batch_delete`,
 				method: 'DELETE',
 				headers: {
 					'Authorization': `Bearer ${this.settings.accessToken}`,
@@ -2046,11 +3168,72 @@ export class FeishuApiService {
 				throw new Error(data.msg || '删除占位符块失败');
 			}
 
-			Debug.log(`✅ Deleted placeholder block: ${placeholderBlock.blockId}`);
+			Debug.log(`✅ Successfully deleted placeholder block: ${targetBlock.block_id}`);
 
 		} catch (error) {
-			Debug.error('Delete placeholder block error:', error);
+			Debug.error('Delete placeholder by text error:', error);
 			throw error;
+		}
+	}
+
+	/**
+	 * 删除占位符文本块（备用方法，带重试机制）
+	 */
+	private async deletePlaceholderBlock(documentId: string, placeholderBlock: PlaceholderBlock): Promise<void> {
+		const maxRetries = 3;
+		let lastError: Error | null = null;
+
+		for (let attempt = 1; attempt <= maxRetries; attempt++) {
+			try {
+				// 添加延迟以避免频率限制
+				if (attempt > 1) {
+					const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000); // 指数退避，最大5秒
+					Debug.log(`⏱️ Waiting ${delay}ms before retry attempt ${attempt}...`);
+					await new Promise(resolve => setTimeout(resolve, delay));
+				}
+
+				const requestData = {
+					start_index: placeholderBlock.index,
+					end_index: placeholderBlock.index + 1
+				};
+
+				Debug.log(`🗑️ Attempting to delete placeholder block (attempt ${attempt}/${maxRetries}): ${placeholderBlock.blockId}`);
+
+				const response = await requestUrl({
+					url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${placeholderBlock.parentId}/children/batch_delete`,
+					method: 'DELETE',
+					headers: {
+						'Authorization': `Bearer ${this.settings.accessToken}`,
+						'Content-Type': 'application/json'
+					},
+					body: JSON.stringify(requestData)
+				});
+
+				const data = response.json || JSON.parse(response.text);
+
+				if (data.code !== 0) {
+					throw new Error(data.msg || '删除占位符块失败');
+				}
+
+				Debug.log(`✅ Deleted placeholder block: ${placeholderBlock.blockId}`);
+				return; // 成功，退出重试循环
+
+			} catch (error) {
+				lastError = error instanceof Error ? error : new Error(String(error));
+				Debug.warn(`⚠️ Delete attempt ${attempt} failed:`, lastError.message);
+
+				// 如果是频率限制错误且还有重试机会，继续重试
+				if (lastError.message.includes('429') && attempt < maxRetries) {
+					Debug.log(`🔄 Rate limit hit, will retry (${attempt}/${maxRetries})...`);
+					continue;
+				}
+
+				// 如果不是频率限制错误或已达到最大重试次数，抛出错误
+				if (attempt === maxRetries) {
+					Debug.error(`❌ All ${maxRetries} delete attempts failed for block ${placeholderBlock.blockId}`);
+					throw lastError;
+				}
+			}
 		}
 	}
 
@@ -2110,6 +3293,176 @@ export class FeishuApiService {
 	}
 
 	/**
+	 * 处理所有占位符：文件、图片和 Callout 块
+	 */
+	async processAllPlaceholders(documentId: string, localFiles: LocalFileInfo[], calloutBlocks?: CalloutInfo[], statusNotice?: Notice): Promise<void> {
+		const totalItems = localFiles.length + (calloutBlocks?.length || 0);
+		Debug.log(`🎯 Processing placeholders: ${localFiles.length} files + ${calloutBlocks?.length || 0} callouts = ${totalItems} total`);
+
+		if (calloutBlocks && calloutBlocks.length > 0) {
+			Debug.log('📋 Callout blocks to process:');
+			calloutBlocks.forEach((callout, index) => {
+				Debug.log(`  ${index + 1}: ${callout.type} - "${callout.title}" (placeholder: ${callout.placeholder})`);
+			});
+		}
+
+		if (totalItems === 0) {
+			Debug.log('📝 No placeholders to process');
+			return;
+		}
+
+		try {
+			if (statusNotice) {
+				statusNotice.setMessage(`🔍 正在查找占位符 (${totalItems} 个项目)...`);
+			}
+
+			// 第一步：查找占位符文本块
+			const placeholderBlocks = await this.findPlaceholderBlocks(documentId, localFiles, calloutBlocks);
+
+			if (placeholderBlocks.length === 0) {
+				Debug.warn('⚠️ No placeholder blocks found in document');
+				return;
+			}
+
+			Debug.log(`🎯 Found ${placeholderBlocks.length} placeholder blocks to process`);
+
+			// 分离不同类型的占位符
+			const fileBlocks = placeholderBlocks.filter(block => block.fileInfo);
+			const calloutPlaceholderBlocks = placeholderBlocks.filter(block => block.calloutInfo);
+
+			// 第二步：处理 Callout 块（优先处理，因为不需要文件上传）
+			if (calloutPlaceholderBlocks.length > 0) {
+				if (statusNotice) {
+					statusNotice.setMessage(`🎨 正在创建 ${calloutPlaceholderBlocks.length} 个高亮块...`);
+				}
+
+				const processedCalloutBlocks: PlaceholderBlock[] = [];
+
+				for (let i = 0; i < calloutPlaceholderBlocks.length; i++) {
+					const placeholderBlock = calloutPlaceholderBlocks[i];
+					try {
+						// 在每个 Callout 块创建之间添加延迟避免频率限制
+						if (i > 0) {
+							const delay = 1500; // 1.5秒延迟，确保不超过频率限制
+							Debug.log(`⏱️ Waiting ${delay}ms between Callout block creations...`);
+							await new Promise(resolve => setTimeout(resolve, delay));
+						}
+
+						await this.insertCalloutBlock(documentId, placeholderBlock);
+						processedCalloutBlocks.push(placeholderBlock);
+						Debug.log(`✅ Successfully created Callout block: ${placeholderBlock.calloutInfo?.type}`);
+					} catch (error) {
+						Debug.error(`❌ Failed to create Callout block:`, error);
+					}
+				}
+
+				// 删除成功创建的 Callout 占位符块
+				if (processedCalloutBlocks.length > 0) {
+					if (statusNotice) {
+						statusNotice.setMessage(`🧹 正在清理 ${processedCalloutBlocks.length} 个占位符...`);
+					}
+
+					// 在删除操作前添加延迟，确保 Callout 创建完成
+					const delay = 2000; // 增加到2秒延迟，确保创建完成
+					Debug.log(`⏱️ Waiting ${delay}ms before deleting placeholders...`);
+					await new Promise(resolve => setTimeout(resolve, delay));
+
+					// 使用更精确的删除方法：直接删除包含占位符文本的块
+					Debug.log(`🔍 Searching for placeholder text blocks to delete...`);
+
+					for (const calloutInfo of calloutBlocks || []) {
+						try {
+							await this.deleteBlockByPlaceholderText(documentId, calloutInfo.placeholder);
+						} catch (error) {
+							Debug.error(`❌ Failed to delete placeholder for ${calloutInfo.placeholder}:`, error);
+						}
+					}
+				}
+			}
+
+			// 第三步：处理文件块
+			if (fileBlocks.length > 0) {
+				await this.processFileBlocks(documentId, fileBlocks, statusNotice);
+			}
+
+		} catch (error) {
+			Debug.error('Process all placeholders error:', error);
+			throw error;
+		}
+	}
+
+	/**
+	 * 处理文件块（从原有逻辑提取）
+	 */
+	private async processFileBlocks(documentId: string, placeholderBlocks: PlaceholderBlock[], statusNotice?: Notice): Promise<void> {
+		// 按照原始文件顺序排序占位符块
+		const sortedPlaceholderBlocks = placeholderBlocks.filter(block => block.fileInfo);
+
+		if (sortedPlaceholderBlocks.length === 0) {
+			return;
+		}
+
+		// 并行读取所有文件内容
+		if (statusNotice) {
+			statusNotice.setMessage(`📖 正在并行读取 ${sortedPlaceholderBlocks.length} 个文件...`);
+		}
+
+		const fileReadPromises = sortedPlaceholderBlocks.map(async (placeholderBlock) => {
+			try {
+				const fileContent = await this.readLocalFile(placeholderBlock.fileInfo!.originalPath);
+				return { placeholderBlock, fileContent, success: !!fileContent };
+			} catch (error) {
+				Debug.warn(`⚠️ Failed to read file: ${placeholderBlock.fileInfo!.originalPath}`, error);
+				return { placeholderBlock, fileContent: null, success: false };
+			}
+		});
+
+		const fileReadResults = await Promise.all(fileReadPromises);
+		const validFiles = fileReadResults.filter(result => result.success);
+		Debug.log(`📁 Successfully read ${validFiles.length}/${sortedPlaceholderBlocks.length} files`);
+
+		// 串行处理文件上传（避免并发限制）
+		const processedBlocks: PlaceholderBlock[] = [];
+		for (let i = 0; i < validFiles.length; i++) {
+			const { placeholderBlock, fileContent } = validFiles[i];
+			const fileInfo = placeholderBlock.fileInfo!;
+
+			if (statusNotice) {
+				statusNotice.setMessage(`📤 正在上传文件 ${i + 1}/${validFiles.length}: ${fileInfo.fileName}...`);
+			}
+
+			try {
+				// 调整插入位置（考虑之前插入的文件块）
+				const adjustedPlaceholderBlock = {
+					...placeholderBlock,
+					index: placeholderBlock.index + i
+				};
+				Debug.log(`📍 Adjusted insert position for ${fileInfo.fileName}: ${placeholderBlock.index} -> ${adjustedPlaceholderBlock.index}`);
+
+				// 创建文件块并上传文件
+				const newBlockId = await this.insertFileBlock(documentId, adjustedPlaceholderBlock);
+				const fileToken = await this.uploadFileToDocument(documentId, newBlockId, fileInfo, fileContent!);
+				await this.setFileBlockContent(documentId, newBlockId, fileToken, fileInfo.isImage);
+
+				processedBlocks.push(placeholderBlock);
+				Debug.log(`✅ Successfully processed file: ${fileInfo.fileName}`);
+
+			} catch (fileError) {
+				Debug.error(`❌ Failed to process file ${fileInfo.fileName}:`, fileError);
+				// 继续处理其他文件，不中断整个流程
+			}
+		}
+
+		// 批量替换占位符文本
+		if (processedBlocks.length > 0) {
+			if (statusNotice) {
+				statusNotice.setMessage(`🔄 正在清理 ${processedBlocks.length} 个占位符...`);
+			}
+			await this.batchReplacePlaceholderText(documentId, processedBlocks);
+		}
+	}
+
+	/**
 	 * 处理第三阶段：文件上传和替换占位符（优化版本）
 	 */
 	async processFileUploads(documentId: string, localFiles: LocalFileInfo[], statusNotice?: Notice): Promise<void> {
@@ -2144,10 +3497,13 @@ export class FeishuApiService {
 
 			const fileReadPromises = sortedPlaceholderBlocks.map(async (placeholderBlock) => {
 				try {
+					if (!placeholderBlock.fileInfo) {
+						throw new Error('File info is missing');
+					}
 					const fileContent = await this.readLocalFile(placeholderBlock.fileInfo.originalPath);
 					return { placeholderBlock, fileContent, success: !!fileContent };
 				} catch (error) {
-					Debug.warn(`⚠️ Failed to read file: ${placeholderBlock.fileInfo.originalPath}`, error);
+					Debug.warn(`⚠️ Failed to read file: ${placeholderBlock.fileInfo?.originalPath || 'unknown'}`, error);
 					return { placeholderBlock, fileContent: null, success: false };
 				}
 			});
@@ -2161,6 +3517,11 @@ export class FeishuApiService {
 			for (let i = 0; i < validFiles.length; i++) {
 				const { placeholderBlock, fileContent } = validFiles[i];
 				const fileInfo = placeholderBlock.fileInfo;
+
+				if (!fileInfo) {
+					Debug.warn(`⚠️ Skipping file processing: fileInfo is missing`);
+					continue;
+				}
 
 				if (statusNotice) {
 					statusNotice.setMessage(`📤 正在上传文件 ${i + 1}/${validFiles.length}: ${fileInfo.fileName}...`);
@@ -2224,7 +3585,8 @@ export class FeishuApiService {
 
 		Debug.log('📋 Found placeholder blocks:');
 		placeholderBlocks.forEach((block, index) => {
-			Debug.log(`  ${index}: ${block.fileInfo.fileName} -> ${block.placeholder} (index: ${block.index})`);
+			const fileName = block.fileInfo?.fileName || block.calloutInfo?.type || 'unknown';
+			Debug.log(`  ${index}: ${fileName} -> ${block.placeholder} (index: ${block.index})`);
 		});
 
 		// 创建文件顺序映射（基于localFiles数组的顺序）
@@ -2237,7 +3599,9 @@ export class FeishuApiService {
 		const sorted = placeholderBlocks.sort((a, b) => {
 			const orderA = fileOrderMap.get(a.placeholder) ?? 999;
 			const orderB = fileOrderMap.get(b.placeholder) ?? 999;
-			Debug.log(`🔄 Comparing: ${a.fileInfo.fileName}(order:${orderA}, index:${a.index}) vs ${b.fileInfo.fileName}(order:${orderB}, index:${b.index})`);
+			const nameA = a.fileInfo?.fileName || a.calloutInfo?.type || 'unknown';
+			const nameB = b.fileInfo?.fileName || b.calloutInfo?.type || 'unknown';
+			Debug.log(`🔄 Comparing: ${nameA}(order:${orderA}, index:${a.index}) vs ${nameB}(order:${orderB}, index:${b.index})`);
 
 			// 如果localFiles顺序不同，使用localFiles顺序
 			if (orderA !== orderB) {
@@ -2250,7 +3614,8 @@ export class FeishuApiService {
 
 		Debug.log('📋 Sorted placeholder blocks:');
 		sorted.forEach((block, index) => {
-			Debug.log(`  ${index}: ${block.fileInfo.fileName} -> ${block.placeholder}`);
+			const fileName = block.fileInfo?.fileName || block.calloutInfo?.type || 'unknown';
+			Debug.log(`  ${index}: ${fileName} -> ${block.placeholder}`);
 		});
 
 		return sorted;
@@ -3465,12 +4830,14 @@ export class FeishuApiService {
 	 * @param sourceDocumentId 源文档ID
 	 * @param targetDocumentId 目标文档ID
 	 * @param localFiles 本地文件列表
+	 * @param calloutBlocks Callout 块列表
 	 * @returns 复制操作结果
 	 */
 	async copyContentToDocument(
 		sourceDocumentId: string,
 		targetDocumentId: string,
-		localFiles: LocalFileInfo[]
+		localFiles: LocalFileInfo[],
+		calloutBlocks?: CalloutInfo[]
 	): Promise<{success: boolean, error?: string}> {
 		try {
 			Debug.log(`📋 Copying content from ${sourceDocumentId} to ${targetDocumentId}`);
@@ -3513,6 +4880,27 @@ export class FeishuApiService {
 			}
 
 			Debug.log(`✅ Successfully copied ${sourceChildren.length} blocks to target document`);
+
+			// 处理占位符（文件和 Callout 块）
+			const hasLocalFiles = localFiles && localFiles.length > 0;
+			const hasCalloutBlocks = calloutBlocks && calloutBlocks.length > 0;
+
+			if (hasLocalFiles || hasCalloutBlocks) {
+				Debug.log(`🎯 Processing placeholders after content copy: ${localFiles?.length || 0} files + ${calloutBlocks?.length || 0} callouts`);
+
+				try {
+					await this.processAllPlaceholders(
+						targetDocumentId,
+						localFiles || [],
+						calloutBlocks
+					);
+					Debug.log(`✅ Successfully processed all placeholders`);
+				} catch (placeholderError) {
+					Debug.error('❌ Failed to process placeholders:', placeholderError);
+					// 不抛出错误，因为内容复制已经成功，占位符处理失败不应该影响整体流程
+				}
+			}
+
 			return { success: true };
 
 		} catch (error) {
@@ -4154,7 +5542,8 @@ export class FeishuApiService {
 				extractedTitle: processResult.extractedTitle
 			};
 
-			const tempResult = await this.shareMarkdownWithFiles(title + '_temp', tempProcessResult, statusNotice, true);
+			// 对于更新操作，临时文档始终在云空间创建（避免知识库中的临时文档无法删除）
+			const tempResult = await this.shareToDrive(title + '_temp', tempProcessResult, statusNotice, true);
 			if (!tempResult.success) {
 				throw new Error(tempResult.error || '创建临时文档失败');
 			}
@@ -4191,7 +5580,8 @@ export class FeishuApiService {
 			const copyResult = await this.copyContentToDocument(
 				tempDocumentId,
 				documentId,
-				processResult.localFiles
+				processResult.localFiles,
+				processResult.calloutBlocks
 			);
 
 			if (!copyResult.success) {

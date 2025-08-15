@@ -1,5 +1,5 @@
 import { App, TFile, normalizePath } from 'obsidian';
-import { LocalFileInfo, MarkdownProcessResult, ProcessContext, FrontMatterData } from './types';
+import { LocalFileInfo, MarkdownProcessResult, ProcessContext, FrontMatterData, CalloutInfo } from './types';
 import { Debug } from './debug';
 import { CALLOUT_TYPE_MAPPING } from './constants';
 
@@ -9,6 +9,7 @@ import { CALLOUT_TYPE_MAPPING } from './constants';
  */
 export class MarkdownProcessor {
 	private localFiles: LocalFileInfo[] = [];
+	private calloutBlocks: CalloutInfo[] = [];
 	private app: App;
 
 	constructor(app: App) {
@@ -260,7 +261,7 @@ export class MarkdownProcessor {
 
 	/**
 	 * 处理 Obsidian Callout 块
-	 * 使用改进的 Markdown 格式化方案，在飞书中显示为引用块
+	 * 使用占位符机制，在飞书中创建真正的高亮块（Callout Block）
 	 */
 	private processCallouts(content: string): string {
 		// 改进的正则表达式，支持折叠语法和更复杂的内容
@@ -271,9 +272,11 @@ export class MarkdownProcessor {
 		return content.replace(calloutRegex, (match, type, foldable, title, body) => {
 			// 获取 callout 类型（转为小写，移除可能的折叠标记）
 			const calloutType = type.toLowerCase().trim();
+			Debug.log(`🎨 Processing Callout: type="${calloutType}", foldable="${foldable}", title="${title}"`);
 
 			// 从映射表中获取样式信息，如果没有找到则使用默认样式
 			const styleInfo = CALLOUT_TYPE_MAPPING[calloutType] || CALLOUT_TYPE_MAPPING['default'];
+			Debug.log(`🎨 Style mapping: emoji="${styleInfo.emoji}", color="${styleInfo.color}", title="${styleInfo.title}"`);
 
 			// 处理标题（如果有的话）
 			let calloutTitle = title.trim() || styleInfo.title;
@@ -301,21 +304,30 @@ export class MarkdownProcessor {
 
 			const calloutContent = processedLines.join('\n');
 
-			// 生成改进的引用块格式
-			const formattedTitle = `**${styleInfo.emoji} ${calloutTitle}**`;
+			// 生成占位符
+			const placeholder = this.generatePlaceholder();
+			Debug.log(`🔗 Generated placeholder: ${placeholder}`);
 
-			// 将内容的每一行都加上引用符号，保持原有的缩进和格式
-			const quotedContent = calloutContent
-				.split('\n')
-				.map(line => {
-					if (line.trim() === '') {
-						return '>'; // 空行也要有引用符号
-					}
-					return `> ${line}`;
-				})
-				.join('\n');
+			// 创建 Callout 信息
+			const calloutInfo: CalloutInfo = {
+				placeholder: placeholder,
+				type: calloutType,
+				title: calloutTitle,
+				content: calloutContent,
+				foldable: foldable === '-',
+				backgroundColor: this.mapColorToFeishu(styleInfo.color, 'background'),
+				borderColor: this.mapColorToFeishu(styleInfo.color, 'border'),
+				textColor: this.mapColorToFeishu(styleInfo.color, 'text'),
+				emojiId: this.mapEmojiToFeishu(styleInfo.emoji)
+			};
 
-			return `\n> ${formattedTitle}\n>\n${quotedContent}\n\n`;
+			Debug.log(`📦 Created CalloutInfo:`, JSON.stringify(calloutInfo, null, 2));
+
+			// 存储 Callout 信息
+			this.calloutBlocks.push(calloutInfo);
+			Debug.log(`📚 Total callout blocks: ${this.calloutBlocks.length}`);
+
+			return placeholder;
 		});
 	}
 
@@ -326,6 +338,48 @@ export class MarkdownProcessor {
 		// 只处理可能与外层 ** 冲突的字符
 		// 将 ** 替换为单个 * 以避免冲突，其他字符保持原样
 		return title.replace(/\*\*/g, '*');
+	}
+
+	/**
+	 * 将颜色映射到飞书的颜色枚举值
+	 */
+	private mapColorToFeishu(color: string, type: 'background' | 'border' | 'text'): number {
+		const colorMap: Record<string, { background: number; border: number; text: number }> = {
+			'red': { background: 1, border: 1, text: 1 },      // 浅红色/红色
+			'orange': { background: 2, border: 2, text: 2 },   // 浅橙色/橙色
+			'yellow': { background: 3, border: 3, text: 3 },   // 浅黄色/黄色
+			'green': { background: 4, border: 4, text: 4 },    // 浅绿色/绿色
+			'blue': { background: 5, border: 5, text: 5 },     // 浅蓝色/蓝色
+			'purple': { background: 6, border: 6, text: 6 },   // 浅紫色/紫色
+			'gray': { background: 7, border: 7, text: 7 },     // 中灰色/灰色
+			'cyan': { background: 5, border: 5, text: 5 }      // 青色映射为蓝色
+		};
+
+		return colorMap[color]?.[type] || colorMap['blue'][type];
+	}
+
+	/**
+	 * 将表情符号映射到飞书支持的表情ID
+	 */
+	private mapEmojiToFeishu(emoji: string): string {
+		const emojiMap: Record<string, string> = {
+			'📝': 'memo',
+			'ℹ️': 'information_source',
+			'💡': 'bulb',
+			'⚠️': 'warning',
+			'❌': 'x',
+			'⛔': 'no_entry',
+			'❓': 'question',
+			'✅': 'white_check_mark',
+			'💬': 'speech_balloon',
+			'📖': 'book',
+			'📄': 'page_facing_up',
+			'📋': 'clipboard',
+			'☑️': 'ballot_box_with_check',
+			'📌': 'pushpin'
+		};
+
+		return emojiMap[emoji] || 'pushpin'; // 默认使用图钉图标
 	}
 
 	/**
@@ -361,8 +415,9 @@ export class MarkdownProcessor {
 		enableLocalAttachmentUpload: boolean = true,
 		titleSource: 'filename' | 'frontmatter' = 'filename'
 	): MarkdownProcessResult {
-		// 重置本地文件列表
+		// 重置本地文件列表和 Callout 列表
 		this.localFiles = [];
+		this.calloutBlocks = [];
 
 		// 处理 Front Matter
 		const { content: processedContent, frontMatter } = this.processFrontMatter(content, frontMatterHandling);
@@ -384,6 +439,7 @@ export class MarkdownProcessor {
 		return {
 			content: finalContent,
 			localFiles: [...this.localFiles],
+			calloutBlocks: [...this.calloutBlocks],
 			frontMatter: frontMatter,
 			extractedTitle: frontMatter?.title || null
 		};
@@ -434,10 +490,18 @@ export class MarkdownProcessor {
 	}
 
 	/**
+	 * 获取收集到的 Callout 块信息
+	 */
+	getCalloutBlocks(): CalloutInfo[] {
+		return [...this.calloutBlocks];
+	}
+
+	/**
 	 * 清空本地文件信息
 	 */
 	clearLocalFiles(): void {
 		this.localFiles = [];
+		this.calloutBlocks = [];
 	}
 
 	/**

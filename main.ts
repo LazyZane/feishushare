@@ -80,6 +80,23 @@ export default class FeishuPlugin extends Plugin {
 			}
 		});
 
+		// 添加API测试命令
+		this.addCommand({
+			id: 'test-feishu-api',
+			name: '🧪 测试飞书API连接',
+			callback: async () => {
+				console.log('🧪 Starting API test...');
+				try {
+					const testResult = await this.feishuApi.testApiConnection();
+					console.log('🧪 API test result:', testResult);
+					new Notice(`API测试结果: ${testResult.success ? '成功' : '失败 - ' + testResult.error}`);
+				} catch (error) {
+					console.error('🧪 API test error:', error);
+					new Notice(`API测试错误: ${error.message}`);
+				}
+			}
+		});
+
 		// 添加日志状态查看命令
 		this.addCommand({
 			id: 'show-feishu-debug-status',
