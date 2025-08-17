@@ -75,20 +75,18 @@ class RateLimitController {
 }
 
 /**
- * 飞书 API 服务类 - 直接实现版本
+ * 图片处理服务类
+ * 负责图片的下载、本地读取、上传到飞书等功能
  */
-export class FeishuApiService {
-	private settings: FeishuSettings;
+class ImageProcessingService {
 	private app: App;
-	private markdownProcessor: MarkdownProcessor;
-	private rateLimitController: RateLimitController;
-	private refreshPromise: Promise<boolean> | null = null; // 防止并发刷新
+	private settings: FeishuSettings;
+	private feishuService: FeishuApiService;
 
-	constructor(settings: FeishuSettings, app: App) {
-		this.settings = settings;
+	constructor(app: App, settings: FeishuSettings, feishuService: FeishuApiService) {
 		this.app = app;
-		this.markdownProcessor = new MarkdownProcessor(app);
-		this.rateLimitController = new RateLimitController();
+		this.settings = settings;
+		this.feishuService = feishuService;
 	}
 
 	/**
@@ -96,6 +94,444 @@ export class FeishuApiService {
 	 */
 	updateSettings(settings: FeishuSettings) {
 		this.settings = settings;
+	}
+
+	/**
+	 * 判断是否为网络图片
+	 */
+	private isNetworkImage(path: string): boolean {
+		return path.startsWith('http://') || path.startsWith('https://');
+	}
+
+	/**
+	 * 判断是否为图床图片（常见图床域名）
+	 */
+	private isImageHosting(url: string): boolean {
+		const imageHostingDomains = [
+			'imgur.com', 'i.imgur.com',
+			'github.com', 'raw.githubusercontent.com',
+			'gitee.com', 'gitee.io',
+			'sm.ms', 'i.loli.net',
+			'qiniu.com', 'qiniucdn.com',
+			'aliyuncs.com', 'alicdn.com',
+			'tencent-cloud.com', 'myqcloud.com',
+			'jsdelivr.net', 'unpkg.com',
+			'picgo.org', 'pic.rmb.bdstatic.com'
+		];
+
+		try {
+			const urlObj = new URL(url);
+			return imageHostingDomains.some(domain =>
+				urlObj.hostname.includes(domain) || urlObj.hostname.endsWith(domain)
+			);
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * 下载网络图片
+	 */
+	private async downloadImage(url: string): Promise<ArrayBuffer> {
+		try {
+			Debug.log(`📥 Downloading image from: ${url}`);
+
+			const response = await requestUrl({
+				url: url,
+				method: 'GET',
+				headers: {
+					'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+				}
+			});
+
+			if (response.status !== 200) {
+				throw new Error(`HTTP ${response.status}: Request failed`);
+			}
+
+			const arrayBuffer = response.arrayBuffer;
+			Debug.log(`✅ Successfully downloaded image: ${arrayBuffer.byteLength} bytes`);
+			return arrayBuffer;
+
+		} catch (error) {
+			Debug.error(`❌ Failed to download image from ${url}:`, error);
+			throw new Error(`图片下载失败: ${error.message}`);
+		}
+	}
+
+	/**
+	 * 读取本地图片
+	 */
+	private async readLocalImage(path: string): Promise<ArrayBuffer> {
+		try {
+			Debug.log(`📁 Reading local image: ${path}`);
+
+			// 规范化路径
+			const normalizedPath = normalizePath(path);
+
+			// 检查文件是否存在
+			const exists = await this.app.vault.adapter.exists(normalizedPath);
+			if (!exists) {
+				throw new Error(`文件不存在: ${normalizedPath}`);
+			}
+
+			// 读取二进制数据
+			const arrayBuffer = await this.app.vault.adapter.readBinary(normalizedPath);
+			Debug.log(`✅ Successfully read local image: ${arrayBuffer.byteLength} bytes`);
+			return arrayBuffer;
+
+		} catch (error) {
+			Debug.error(`❌ Failed to read local image ${path}:`, error);
+			throw new Error(`本地图片读取失败: ${error.message}`);
+		}
+	}
+
+	/**
+	 * 上传图片到飞书文档的指定图片块
+	 */
+	private async uploadImageToDocument(
+		documentId: string,
+		blockId: string,
+		imageData: ArrayBuffer,
+		fileName: string
+	): Promise<string> {
+		try {
+			Debug.log(`📤 Uploading image to document ${documentId}, block ${blockId}`);
+
+			// 确保token有效
+			const tokenValid = await this.feishuService.ensureValidToken();
+			if (!tokenValid) {
+				throw new Error('Token无效，请重新授权');
+			}
+
+			// 使用与uploadFileToDocument相同的逻辑
+			const boundary = '---7MA4YWxkTrZu0gW';
+			const contentLength = imageData.byteLength;
+
+			// 构建multipart/form-data的文本部分
+			const textPart = [
+				`--${boundary}`,
+				`Content-Disposition: form-data; name="file_name"`,
+				'',
+				fileName,
+				`--${boundary}`,
+				`Content-Disposition: form-data; name="parent_type"`,
+				'',
+				'docx_image',
+				`--${boundary}`,
+				`Content-Disposition: form-data; name="parent_node"`,
+				'',
+				blockId,
+				`--${boundary}`,
+				`Content-Disposition: form-data; name="size"`,
+				'',
+				contentLength.toString(),
+				`--${boundary}`,
+				`Content-Disposition: form-data; name="extra"`,
+				'',
+				JSON.stringify({ drive_route_token: documentId }),
+				`--${boundary}`,
+				`Content-Disposition: form-data; name="file"; filename="${fileName}"`,
+				`Content-Type: ${this.getImageMimeType(fileName)}`,
+				'',
+				''
+			].join('\r\n');
+
+			const endBoundary = `\r\n--${boundary}--\r\n`;
+
+			// 构建完整的请求体
+			const textPartBytes = new TextEncoder().encode(textPart);
+			const endBoundaryBytes = new TextEncoder().encode(endBoundary);
+			const totalLength = textPartBytes.length + contentLength + endBoundaryBytes.length;
+
+			const bodyBytes = new Uint8Array(totalLength);
+			let offset = 0;
+			bodyBytes.set(textPartBytes, offset);
+			offset += textPartBytes.length;
+			bodyBytes.set(new Uint8Array(imageData), offset);
+			offset += contentLength;
+			bodyBytes.set(endBoundaryBytes, offset);
+
+			const response = await requestUrl({
+				url: FEISHU_CONFIG.UPLOAD_URL,
+				method: 'POST',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': `multipart/form-data; boundary=${boundary}`,
+				},
+				body: bodyBytes.buffer
+			});
+
+			const data = response.json || JSON.parse(response.text);
+
+			if (data.code !== 0) {
+				throw new Error(data.msg || '图片上传失败');
+			}
+
+			const fileToken = data.data.file_token;
+			Debug.log(`✅ Successfully uploaded image, token: ${fileToken}`);
+			return fileToken;
+
+		} catch (error) {
+			Debug.error(`❌ Failed to upload image to document:`, error);
+			throw new Error(`图片上传失败: ${error.message}`);
+		}
+	}
+
+	/**
+	 * 获取图片的MIME类型
+	 */
+	private getImageMimeType(fileName: string): string {
+		const ext = fileName.toLowerCase().split('.').pop();
+		switch (ext) {
+			case 'jpg':
+			case 'jpeg':
+				return 'image/jpeg';
+			case 'png':
+				return 'image/png';
+			case 'gif':
+				return 'image/gif';
+			case 'webp':
+				return 'image/webp';
+			case 'svg':
+				return 'image/svg+xml';
+			case 'bmp':
+				return 'image/bmp';
+			default:
+				return 'image/jpeg'; // 默认
+		}
+	}
+
+	/**
+	 * 处理图片块：下载图床图片或读取本地图片，然后上传到飞书
+	 */
+	async processImageBlock(
+		documentId: string,
+		blockId: string,
+		localFile: LocalFileInfo
+	): Promise<string> {
+		try {
+			Debug.log(`🖼️ Processing image block: ${localFile.fileName}`);
+
+			let imageData: ArrayBuffer;
+
+			if (this.isNetworkImage(localFile.originalPath)) {
+				// 下载网络图片
+				imageData = await this.downloadImage(localFile.originalPath);
+			} else {
+				// 读取本地图片
+				imageData = await this.readLocalImage(localFile.originalPath);
+			}
+
+			// 上传到飞书
+			const fileToken = await this.uploadImageToDocument(
+				documentId,
+				blockId,
+				imageData,
+				localFile.fileName
+			);
+
+			Debug.log(`✅ Image block processed successfully: ${fileToken}`);
+			return fileToken;
+
+		} catch (error) {
+			Debug.error(`❌ Failed to process image block:`, error);
+			throw error;
+		}
+	}
+
+	/**
+	 * 批量处理图片块
+	 */
+	async processImageBlocks(
+		documentId: string,
+		imageBlockMap: Map<string, LocalFileInfo>
+	): Promise<Map<string, string>> {
+		const results = new Map<string, string>();
+
+		for (const [blockId, localFile] of imageBlockMap) {
+			try {
+				const fileToken = await this.processImageBlock(documentId, blockId, localFile);
+				results.set(blockId, fileToken);
+			} catch (error) {
+				Debug.warn(`⚠️ Failed to process image block ${blockId}, skipping...`);
+				// 继续处理其他图片，不中断整个流程
+			}
+		}
+
+		return results;
+	}
+
+	/**
+	 * 更新图片块的token
+	 */
+	async updateImageBlockToken(
+		documentId: string,
+		blockId: string,
+		fileToken: string
+	): Promise<void> {
+		try {
+			Debug.log(`🔄 Updating image block ${blockId} with token ${fileToken}`);
+
+			const response = await requestUrl({
+				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${blockId}`,
+				method: 'PATCH',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify({
+					replace_image: {
+						token: fileToken
+					}
+				})
+			});
+
+			const data = response.json || JSON.parse(response.text);
+
+			if (data.code !== 0) {
+				throw new Error(data.msg || '图片块更新失败');
+			}
+
+			Debug.log(`✅ Successfully updated image block ${blockId}`);
+
+		} catch (error) {
+			Debug.error(`❌ Failed to update image block:`, error);
+			throw new Error(`图片块更新失败: ${error.message}`);
+		}
+	}
+
+	/**
+	 * 创建图片占位符文本块
+	 */
+	createImagePlaceholderBlock(sourceBlock: any): any {
+		const imageInfo = {
+			width: sourceBlock.image?.width || '未知',
+			height: sourceBlock.image?.height || '未知',
+			token: sourceBlock.image?.token || '无',
+			align: sourceBlock.image?.align || 1
+		};
+
+		const placeholderText = `🖼️ [图片占位符]\n` +
+			`📐 尺寸: ${imageInfo.width}×${imageInfo.height}px\n` +
+			`🔗 原始Token: ${imageInfo.token}\n` +
+			`💡 说明: 由于飞书API限制，图片无法跨文档复制\n` +
+			`🛠️ 解决方案: 请手动重新插入图片，或使用插件的"重新处理图片"功能`;
+
+		return {
+			block_type: 2, // 文本块
+			text: {
+				elements: [{
+					text_run: {
+						content: placeholderText
+					}
+				}]
+			}
+		};
+	}
+
+	/**
+	 * 从飞书下载图片
+	 */
+	async downloadImageFromFeishu(imageToken: string): Promise<ArrayBuffer> {
+		try {
+			Debug.log(`📥 Downloading image from Feishu with token: ${imageToken}`);
+
+			// 确保token有效
+			const tokenValid = await this.feishuService.ensureValidToken();
+			if (!tokenValid) {
+				throw new Error('Token无效，请重新授权');
+			}
+
+			// 使用飞书的素材下载API
+			const response = await requestUrl({
+				url: `${FEISHU_CONFIG.BASE_URL}/drive/v1/medias/${imageToken}/download`,
+				method: 'GET',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`
+				}
+			});
+
+			if (response.status !== 200) {
+				throw new Error(`HTTP ${response.status}: Download failed`);
+			}
+
+			const arrayBuffer = response.arrayBuffer;
+			Debug.log(`✅ Successfully downloaded image: ${arrayBuffer.byteLength} bytes`);
+			return arrayBuffer;
+
+		} catch (error) {
+			Debug.error(`❌ Failed to download image from Feishu:`, error);
+			throw new Error(`图片下载失败: ${error.message}`);
+		}
+	}
+
+	/**
+	 * 重新处理图片块：下载原图片并重新上传
+	 */
+	async reprocessImageBlock(
+		documentId: string,
+		imageBlock: any,
+		sourceImageToken: string
+	): Promise<boolean> {
+		try {
+			Debug.log(`🔄 Reprocessing image block ${imageBlock.block_id} with source token ${sourceImageToken}`);
+
+			// 1. 从飞书下载原图片
+			const imageData = await this.downloadImageFromFeishu(sourceImageToken);
+
+			// 2. 生成文件名
+			const fileName = `image_${Date.now()}.jpg`;
+
+			// 3. 上传到目标图片块
+			const newFileToken = await this.uploadImageToDocument(
+				documentId,
+				imageBlock.block_id,
+				imageData,
+				fileName
+			);
+
+			// 4. 更新图片块的token
+			await this.updateImageBlockToken(
+				documentId,
+				imageBlock.block_id,
+				newFileToken
+			);
+
+			Debug.log(`✅ Successfully reprocessed image block ${imageBlock.block_id}`);
+			return true;
+
+		} catch (error) {
+			Debug.error(`❌ Failed to reprocess image block ${imageBlock.block_id}:`, error);
+			return false;
+		}
+	}
+}
+
+/**
+ * 飞书 API 服务类 - 直接实现版本
+ */
+export class FeishuApiService {
+	private settings: FeishuSettings;
+	private app: App;
+	private markdownProcessor: MarkdownProcessor;
+	private rateLimitController: RateLimitController;
+	private imageProcessingService: ImageProcessingService;
+	private refreshPromise: Promise<boolean> | null = null; // 防止并发刷新
+
+	constructor(settings: FeishuSettings, app: App) {
+		this.settings = settings;
+		this.app = app;
+		this.markdownProcessor = new MarkdownProcessor(app);
+		this.rateLimitController = new RateLimitController();
+		this.imageProcessingService = new ImageProcessingService(app, settings, this);
+	}
+
+	/**
+	 * 更新设置
+	 */
+	updateSettings(settings: FeishuSettings) {
+		this.settings = settings;
+		this.imageProcessingService.updateSettings(settings);
 	}
 
 	/**
@@ -1500,7 +1936,7 @@ export class FeishuApiService {
 	/**
 	 * 检查并刷新token
 	 */
-	private async ensureValidToken(): Promise<boolean> {
+	async ensureValidToken(): Promise<boolean> {
 		if (!this.settings.accessToken) {
 			return false;
 		}
@@ -2161,10 +2597,28 @@ export class FeishuApiService {
 		for (let blockIndex = 0; blockIndex < blocks.length; blockIndex++) {
 			const block = blocks[blockIndex];
 
-			// 处理文本块、列表块等包含文本内容的块
+			// 处理文本块、标题块、列表块等包含文本内容的块
 			let textData = null;
 			if (block.text && block.text.elements) {
 				textData = block.text;
+			} else if (block.heading1 && block.heading1.elements) {
+				textData = block.heading1;
+			} else if (block.heading2 && block.heading2.elements) {
+				textData = block.heading2;
+			} else if (block.heading3 && block.heading3.elements) {
+				textData = block.heading3;
+			} else if (block.heading4 && block.heading4.elements) {
+				textData = block.heading4;
+			} else if (block.heading5 && block.heading5.elements) {
+				textData = block.heading5;
+			} else if (block.heading6 && block.heading6.elements) {
+				textData = block.heading6;
+			} else if (block.heading7 && block.heading7.elements) {
+				textData = block.heading7;
+			} else if (block.heading8 && block.heading8.elements) {
+				textData = block.heading8;
+			} else if (block.heading9 && block.heading9.elements) {
+				textData = block.heading9;
 			} else if (block.bullet && block.bullet.elements) {
 				textData = block.bullet; // 无序列表块
 			} else if (block.ordered && block.ordered.elements) {
@@ -2194,12 +2648,24 @@ export class FeishuApiService {
 				if (isMatch) {
 					Debug.log(`✅ Found placeholder: "${placeholder}" in block ${block.block_id}`);
 
+					// 计算块在其父块中的正确索引
+					const parentBlock = blocks.find(b => b.block_id === block.parent_id);
+					let correctIndex = 0;
+					if (parentBlock && parentBlock.children) {
+						correctIndex = parentBlock.children.indexOf(block.block_id);
+						if (correctIndex === -1) {
+							correctIndex = 0; // 如果找不到，默认为0
+						}
+					}
+
 					const placeholderBlock: PlaceholderBlock = {
 						blockId: block.block_id,
 						parentId: block.parent_id,
-						index: blockIndex,
+						index: correctIndex,
 						placeholder: placeholder
 					};
+
+					Debug.log(`📍 Placeholder block position: parentId=${block.parent_id}, index=${correctIndex} (was ${blockIndex})`);
 
 					// 根据类型添加相应的信息
 					if (patternInfo.fileInfo) {
@@ -3007,43 +3473,16 @@ export class FeishuApiService {
 				}
 			});
 
-			// 构建新的文本元素数组，移除占位符但保留其他文本
-			const newElements = this.buildTextElementsWithoutPlaceholder(blockInfo.elements, placeholderBlock.placeholder);
+			// 分析占位符后的内容，决定处理策略
+			const afterContent = this.extractContentAfterPlaceholder(blockInfo.elements, placeholderBlock.placeholder);
+			Debug.log(`🔍 Content after placeholder: "${afterContent}"`);
 
-			Debug.log(`🔄 Built ${newElements.length} new elements after placeholder removal`);
-			newElements.forEach((element, index) => {
-				if (element.text_run) {
-					Debug.log(`  New Element ${index + 1}: "${element.text_run.content}"`);
-				}
-			});
-
-			const requestData = {
-				update_text_elements: {
-					elements: newElements
-				}
-			};
-
-			Debug.log(`🔧 Replacing placeholder text in block: ${placeholderBlock.blockId}`);
-
-			const response = await requestUrl({
-				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${placeholderBlock.blockId}`,
-				method: 'PATCH',
-				headers: {
-					'Authorization': `Bearer ${this.settings.accessToken}`,
-					'Content-Type': 'application/json'
-				},
-				body: JSON.stringify(requestData)
-			});
-
-			const data = response.json || JSON.parse(response.text);
-			Debug.log(`📋 Replace placeholder response:`, data);
-
-			if (data.code !== 0) {
-				Debug.warn(`⚠️ Failed to replace placeholder text: ${data.msg}, trying delete method...`);
-				// 如果替换失败，尝试删除方法
-				await this.deletePlaceholderBlock(documentId, placeholderBlock);
+			if (afterContent && this.shouldCreateSeparateBlock(afterContent)) {
+				// 需要创建独立块的情况
+				await this.handlePlaceholderWithSeparateBlock(documentId, placeholderBlock, afterContent);
 			} else {
-				Debug.log(`✅ Replaced placeholder text in block: ${placeholderBlock.blockId}`);
+				// 常规替换处理
+				await this.handlePlaceholderWithTextReplacement(documentId, placeholderBlock, blockInfo);
 			}
 
 		} catch (error) {
@@ -3054,6 +3493,155 @@ export class FeishuApiService {
 			} catch (deleteError) {
 				Debug.error('Both replace and delete failed:', deleteError);
 			}
+		}
+	}
+
+	/**
+	 * 提取占位符后的内容
+	 */
+	private extractContentAfterPlaceholder(elements: any[], targetPlaceholder: string): string | null {
+		const cleanPlaceholder = targetPlaceholder.replace(/^__/, '').replace(/__$/, '');
+		const possiblePlaceholders = [
+			targetPlaceholder,
+			`!${cleanPlaceholder}!`,
+			cleanPlaceholder,
+			`!${cleanPlaceholder}`,
+			`${cleanPlaceholder}!`
+		];
+
+		for (const element of elements) {
+			if (element.text_run && element.text_run.content) {
+				const content = element.text_run.content;
+
+				for (const placeholder of possiblePlaceholders) {
+					const placeholderIndex = content.indexOf(placeholder);
+					if (placeholderIndex !== -1) {
+						const afterContent = content.substring(placeholderIndex + placeholder.length);
+						return afterContent.length > 0 ? afterContent : null;
+					}
+				}
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * 判断是否需要为后续内容创建独立的块
+	 */
+	private shouldCreateSeparateBlock(afterContent: string): boolean {
+		const trimmed = afterContent.trim();
+
+		// 检查是否是分隔符
+		if (trimmed === '---' || trimmed === '***' || trimmed === '___') {
+			Debug.log(`🔍 Detected separator: "${trimmed}"`);
+			return true;
+		}
+
+		// 检查是否是以换行符开头的实质内容
+		if (afterContent.startsWith('\n') && trimmed.length > 0 && !trimmed.startsWith('!')) {
+			Debug.log(`🔍 Detected content after newline: "${trimmed}"`);
+			return true;
+		}
+
+		return false;
+	}
+
+	/**
+	 * 处理需要创建独立块的占位符
+	 */
+	private async handlePlaceholderWithSeparateBlock(documentId: string, placeholderBlock: PlaceholderBlock, afterContent: string): Promise<void> {
+		Debug.log(`🔧 Handling placeholder with separate block creation`);
+
+		try {
+			// 1. 先删除包含占位符的原始块
+			await this.deletePlaceholderBlock(documentId, placeholderBlock);
+
+			// 2. 创建新的文本块来放置后续内容
+			const trimmedContent = afterContent.trim();
+			if (trimmedContent.length > 0) {
+				Debug.log(`📝 Creating new block for content: "${trimmedContent}"`);
+
+				const requestData = {
+					index: placeholderBlock.index,
+					children: [{
+						block_type: 2, // 文本块
+						text: {
+							elements: [{
+								text_run: {
+									content: trimmedContent
+								}
+							}]
+						}
+					}]
+				};
+
+				const response = await requestUrl({
+					url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${placeholderBlock.parentId}/children`,
+					method: 'POST',
+					headers: {
+						'Authorization': `Bearer ${this.settings.accessToken}`,
+						'Content-Type': 'application/json'
+					},
+					body: JSON.stringify(requestData)
+				});
+
+				const data = response.json || JSON.parse(response.text);
+				if (data.code !== 0) {
+					Debug.warn(`⚠️ Failed to create new block: ${data.msg}`);
+				} else {
+					Debug.log(`✅ Successfully created new block for content`);
+				}
+			}
+
+		} catch (error) {
+			Debug.error('Handle placeholder with separate block error:', error);
+			throw error;
+		}
+	}
+
+	/**
+	 * 处理常规文本替换的占位符
+	 */
+	private async handlePlaceholderWithTextReplacement(documentId: string, placeholderBlock: PlaceholderBlock, blockInfo: any): Promise<void> {
+		Debug.log(`🔧 Handling placeholder with text replacement`);
+
+		// 构建新的文本元素数组，移除占位符但保留其他文本
+		const newElements = this.buildTextElementsWithoutPlaceholder(blockInfo.elements, placeholderBlock.placeholder);
+
+		Debug.log(`🔄 Built ${newElements.length} new elements after placeholder removal`);
+		newElements.forEach((element, index) => {
+			if (element.text_run) {
+				Debug.log(`  New Element ${index + 1}: "${element.text_run.content}"`);
+			}
+		});
+
+		const requestData = {
+			update_text_elements: {
+				elements: newElements
+			}
+		};
+
+		Debug.log(`🔧 Replacing placeholder text in block: ${placeholderBlock.blockId}`);
+
+		const response = await requestUrl({
+			url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${placeholderBlock.blockId}`,
+			method: 'PATCH',
+			headers: {
+				'Authorization': `Bearer ${this.settings.accessToken}`,
+				'Content-Type': 'application/json'
+			},
+			body: JSON.stringify(requestData)
+		});
+
+		const data = response.json || JSON.parse(response.text);
+		Debug.log(`📋 Replace placeholder response:`, data);
+
+		if (data.code !== 0) {
+			Debug.warn(`⚠️ Failed to replace placeholder text: ${data.msg}, trying delete method...`);
+			// 如果替换失败，尝试删除方法
+			await this.deletePlaceholderBlock(documentId, placeholderBlock);
+		} else {
+			Debug.log(`✅ Replaced placeholder text in block: ${placeholderBlock.blockId}`);
 		}
 	}
 
@@ -3101,12 +3689,48 @@ export class FeishuApiService {
 			Debug.log(`🔍 Analyzing ${allBlocks.length} blocks for placeholder text...`);
 
 			for (const block of allBlocks) {
-				if (block.block_type === 2 && block.text && block.text.elements) { // 文本块
-					Debug.log(`📄 Checking text block: ${block.block_id}, elements: ${block.text.elements.length}`);
+				// 检查文本块和标题块
+				let textData: any = null;
+				let blockTypeDesc = '';
+
+				if (block.block_type === 2 && block.text && block.text.elements) {
+					textData = block.text;
+					blockTypeDesc = 'text block';
+				} else if (block.block_type === 3 && block.heading1 && block.heading1.elements) {
+					textData = block.heading1;
+					blockTypeDesc = 'heading1 block';
+				} else if (block.block_type === 4 && block.heading2 && block.heading2.elements) {
+					textData = block.heading2;
+					blockTypeDesc = 'heading2 block';
+				} else if (block.block_type === 5 && block.heading3 && block.heading3.elements) {
+					textData = block.heading3;
+					blockTypeDesc = 'heading3 block';
+				} else if (block.block_type === 6 && block.heading4 && block.heading4.elements) {
+					textData = block.heading4;
+					blockTypeDesc = 'heading4 block';
+				} else if (block.block_type === 7 && block.heading5 && block.heading5.elements) {
+					textData = block.heading5;
+					blockTypeDesc = 'heading5 block';
+				} else if (block.block_type === 8 && block.heading6 && block.heading6.elements) {
+					textData = block.heading6;
+					blockTypeDesc = 'heading6 block';
+				} else if (block.block_type === 9 && block.heading7 && block.heading7.elements) {
+					textData = block.heading7;
+					blockTypeDesc = 'heading7 block';
+				} else if (block.block_type === 10 && block.heading8 && block.heading8.elements) {
+					textData = block.heading8;
+					blockTypeDesc = 'heading8 block';
+				} else if (block.block_type === 11 && block.heading9 && block.heading9.elements) {
+					textData = block.heading9;
+					blockTypeDesc = 'heading9 block';
+				}
+
+				if (textData) {
+					Debug.log(`📄 Checking ${blockTypeDesc}: ${block.block_id}, elements: ${textData.elements.length}`);
 
 					// 收集所有文本内容
 					let fullText = '';
-					for (const element of block.text.elements) {
+					for (const element of textData.elements) {
 						if (element.text_run && element.text_run.content) {
 							fullText += element.text_run.content;
 							Debug.log(`📝 Text element: "${element.text_run.content}"`);
@@ -3121,9 +3745,25 @@ export class FeishuApiService {
 
 					if (fullText.includes(cleanPlaceholderText)) {
 						Debug.log(`🎯 Found placeholder in block: ${block.block_id}`);
-						targetBlock = block;
-						targetParentId = block.parent_id;
-						break;
+
+						// 检查是否整个块只包含占位符（可以直接删除）
+						const trimmedFullText = fullText.trim();
+						const trimmedPlaceholder = cleanPlaceholderText.trim();
+
+						if (trimmedFullText === trimmedPlaceholder) {
+							Debug.log(`🎯 Block contains only placeholder, will delete entire block`);
+							targetBlock = block;
+							targetParentId = block.parent_id;
+							break;
+						} else {
+							Debug.log(`🎯 Block contains placeholder + other text, will update block content`);
+							Debug.log(`📝 Full text: "${fullText}"`);
+							Debug.log(`📝 Placeholder: "${cleanPlaceholderText}"`);
+
+							// 更新块内容，移除占位符
+							await this.updateBlockContentRemovePlaceholder(documentId, block, textData, cleanPlaceholderText);
+							return; // 已处理完成，直接返回
+						}
 					}
 				}
 			}
@@ -3174,6 +3814,109 @@ export class FeishuApiService {
 			Debug.error('Delete placeholder by text error:', error);
 			throw error;
 		}
+	}
+
+	/**
+	 * 更新块内容，移除占位符但保留其他文字
+	 */
+	private async updateBlockContentRemovePlaceholder(
+		documentId: string,
+		block: any,
+		textData: any,
+		placeholderText: string
+	): Promise<void> {
+		try {
+			Debug.log(`🔧 Updating block content to remove placeholder: ${block.block_id}`);
+
+			// 构建新的文本元素数组，移除包含占位符的元素
+			const newElements: any[] = [];
+
+			for (const element of textData.elements) {
+				if (element.text_run && element.text_run.content) {
+					const content = element.text_run.content;
+
+					if (content.includes(placeholderText)) {
+						// 如果元素包含占位符，移除占位符部分
+						const cleanedContent = content.replace(placeholderText, '').trim();
+
+						if (cleanedContent.length > 0) {
+							// 如果还有其他内容，保留
+							newElements.push({
+								text_run: {
+									content: cleanedContent,
+									text_element_style: element.text_run.text_element_style || {}
+								}
+							});
+							Debug.log(`📝 Kept cleaned content: "${cleanedContent}"`);
+						} else {
+							Debug.log(`📝 Removed element containing only placeholder`);
+						}
+					} else {
+						// 不包含占位符的元素直接保留
+						newElements.push(element);
+						Debug.log(`📝 Kept element: "${content}"`);
+					}
+				}
+			}
+
+			if (newElements.length === 0) {
+				Debug.log(`⚠️ No content left after removing placeholder, will delete entire block`);
+				// 如果没有内容了，删除整个块
+				const parentBlock = await this.findParentBlock(block.block_id);
+				if (parentBlock) {
+					await this.deleteBlockFromParent(parentBlock.block_id, block.block_id);
+				}
+				return;
+			}
+
+			// 更新块内容 - 使用飞书API正确的格式
+			const updateData = {
+				update_text_elements: {
+					elements: newElements
+				}
+			};
+
+			Debug.log(`📤 Update request data:`, JSON.stringify(updateData, null, 2));
+
+			const response = await requestUrl({
+				url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${documentId}/blocks/${block.block_id}`,
+				method: 'PATCH',
+				headers: {
+					'Authorization': `Bearer ${this.settings.accessToken}`,
+					'Content-Type': 'application/json'
+				},
+				body: JSON.stringify(updateData)
+			});
+
+			const data = response.json || JSON.parse(response.text);
+
+			if (data.code !== 0) {
+				throw new Error(data.msg || '更新块内容失败');
+			}
+
+			Debug.log(`✅ Successfully updated block content: ${block.block_id}`);
+
+		} catch (error) {
+			Debug.error('Update block content error:', error);
+			throw error;
+		}
+	}
+
+	/**
+	 * 查找块的父块
+	 */
+	private async findParentBlock(blockId: string): Promise<any> {
+		// 这里需要实现查找父块的逻辑
+		// 暂时返回null，如果需要可以进一步实现
+		return null;
+	}
+
+	/**
+	 * 从父块中删除指定的子块
+	 */
+	private async deleteBlockFromParent(parentId: string, blockId: string): Promise<void> {
+		// 这里需要实现从父块删除子块的逻辑
+		// 暂时留空，如果需要可以进一步实现
 	}
 
 	/**
@@ -4201,13 +4944,33 @@ export class FeishuApiService {
 
 						// 添加占位符后的文本
 						if (afterPlaceholder.length > 0) {
-							newElements.push({
-								text_run: {
-									content: afterPlaceholder,
-									text_element_style: element.text_run.text_element_style
+							// 特殊处理：检查是否只包含换行符和分隔符
+							const trimmedAfter = afterPlaceholder.trim();
+							Debug.log(`  🔍 After placeholder analysis: length=${afterPlaceholder.length}, trimmed="${trimmedAfter}"`);
+
+							// 如果只是换行符开头的分隔符（如 "\n---"），需要特殊处理
+							if (afterPlaceholder.startsWith('\n') && (trimmedAfter === '---' || trimmedAfter === '')) {
+								Debug.log(`  ⚠️ Detected separator or empty content after newline, adjusting format`);
+								// 移除开头的换行符，让分隔符单独成行
+								const cleanContent = afterPlaceholder.replace(/^\n+/, '');
+								if (cleanContent.length > 0) {
+									newElements.push({
+										text_run: {
+											content: cleanContent,
+											text_element_style: element.text_run.text_element_style
+										}
+									});
+									Debug.log(`  ➕ Added cleaned after text: "${cleanContent}"`);
 								}
-							});
-							Debug.log(`  ➕ Added after text: "${afterPlaceholder}"`);
+							} else {
+								newElements.push({
+									text_run: {
+										content: afterPlaceholder,
+										text_element_style: element.text_run.text_element_style
+									}
+								});
+								Debug.log(`  ➕ Added after text: "${afterPlaceholder}"`);
+							}
 						}
 
 						foundPlaceholder = true;
@@ -4881,6 +5644,18 @@ export class FeishuApiService {
 
 			Debug.log(`✅ Successfully copied ${sourceChildren.length} blocks to target document`);
 
+			// 处理图片块（下载并重新上传）
+			try {
+				await this.processImageBlocksAfterCopy(
+					sourceDocumentId,
+					targetDocumentId,
+					sourceBlocks
+				);
+			} catch (imageError) {
+				Debug.error('❌ Failed to process image blocks:', imageError);
+				// 不抛出错误，因为内容复制已经成功，图片处理失败不应该影响整体流程
+			}
+
 			// 处理占位符（文件和 Callout 块）
 			const hasLocalFiles = localFiles && localFiles.length > 0;
 			const hasCalloutBlocks = calloutBlocks && calloutBlocks.length > 0;
@@ -4909,6 +5684,91 @@ export class FeishuApiService {
 				success: false,
 				error: error instanceof Error ? error.message : '复制文档内容失败'
 			};
+		}
+	}
+
+	/**
+	 * 在复制完成后处理图片块
+	 * 尝试从源文档的图片块中提取图片并重新上传到目标文档
+	 */
+	private async processImageBlocksAfterCopy(
+		sourceDocumentId: string,
+		targetDocumentId: string,
+		sourceBlocks: any[]
+	): Promise<void> {
+		try {
+			Debug.log(`🖼️ Processing image blocks after copy...`);
+
+			// 获取目标文档的所有块
+			const targetBlocks = await this.getAllDocumentBlocks(targetDocumentId);
+
+			// 找到所有的图片块
+			const imageBlocks = targetBlocks.filter(block => block.block_type === 27);
+
+			if (imageBlocks.length === 0) {
+				Debug.log('📄 No image blocks found in target document');
+				return;
+			}
+
+			Debug.log(`🖼️ Found ${imageBlocks.length} image blocks to process`);
+
+			// 创建源图片块的映射，用于查找对应的源token
+			const sourceImageMap = new Map<number, string>();
+			let sourceImageIndex = 0;
+
+			// 遍历源文档块，收集图片token
+			for (const sourceBlock of sourceBlocks) {
+				if (sourceBlock.block_type === 27 && sourceBlock.image?.token) {
+					sourceImageMap.set(sourceImageIndex, sourceBlock.image.token);
+					sourceImageIndex++;
+				}
+			}
+
+			// 对于每个图片块，尝试处理
+			let targetImageIndex = 0;
+			for (const imageBlock of imageBlocks) {
+				try {
+					// 检查图片块是否为空（没有token）
+					if (!imageBlock.image?.token) {
+						Debug.log(`🖼️ Processing empty image block: ${imageBlock.block_id}`);
+
+						// 尝试从源图片块映射中获取对应的token
+						const sourceToken = sourceImageMap.get(targetImageIndex);
+						if (sourceToken) {
+							Debug.log(`🔄 Found source token for image block ${imageBlock.block_id}: ${sourceToken}`);
+
+							// 使用图片处理服务重新处理图片块
+							const success = await this.imageProcessingService.reprocessImageBlock(
+								targetDocumentId,
+								imageBlock,
+								sourceToken
+							);
+
+							if (success) {
+								Debug.log(`✅ Successfully reprocessed image block ${imageBlock.block_id}`);
+							} else {
+								Debug.warn(`⚠️ Failed to reprocess image block ${imageBlock.block_id}`);
+							}
+						} else {
+							Debug.warn(`⚠️ No source token found for image block ${imageBlock.block_id}`);
+						}
+					} else {
+						Debug.log(`✅ Image block ${imageBlock.block_id} already has token: ${imageBlock.image.token}`);
+					}
+
+					targetImageIndex++;
+				} catch (blockError) {
+					Debug.error(`❌ Failed to process image block ${imageBlock.block_id}:`, blockError);
+					// 继续处理其他图片块
+					targetImageIndex++;
+				}
+			}
+
+			Debug.log(`✅ Completed processing image blocks`);
+
+		} catch (error) {
+			Debug.error('❌ Failed to process image blocks after copy:', error);
+			throw error;
 		}
 	}
 
@@ -5284,6 +6144,12 @@ export class FeishuApiService {
 					children: [blockData]
 				};
 
+				// 添加详细的调试信息
+				if (sourceBlock.block_type === 27) {
+					Debug.log(`🖼️ Image block copy request data:`, JSON.stringify(requestData, null, 2));
+					Debug.log(`🖼️ Original image block:`, JSON.stringify(sourceBlock, null, 2));
+				}
+
 				Debug.verbose(`📝 Creating block in target document (attempt ${retryCount + 1}/${maxRetries}):`, {
 					type: sourceBlock.block_type,
 					targetParent: targetParentId
@@ -5296,15 +6162,46 @@ export class FeishuApiService {
 					await new Promise(resolve => setTimeout(resolve, delay));
 				}
 
-				const response = await requestUrl({
-					url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${targetDocumentId}/blocks/${targetParentId}/children`,
-					method: 'POST',
-					headers: {
-						'Authorization': `Bearer ${this.settings.accessToken}`,
-						'Content-Type': 'application/json'
-					},
-					body: JSON.stringify(requestData)
-				});
+				let response;
+				try {
+					response = await requestUrl({
+						url: `${FEISHU_CONFIG.BASE_URL}/docx/v1/documents/${targetDocumentId}/blocks/${targetParentId}/children`,
+						method: 'POST',
+						headers: {
+							'Authorization': `Bearer ${this.settings.accessToken}`,
+							'Content-Type': 'application/json'
+						},
+						body: JSON.stringify(requestData)
+					});
+
+					// 添加详细的响应信息
+					if (sourceBlock.block_type === 27) {
+						Debug.log(`🖼️ Image block API response status: ${response.status}`);
+						Debug.log(`🖼️ Image block API response:`, response.json || response.text);
+					}
+				} catch (requestError) {
+					// 捕获请求错误并尝试获取响应内容
+					if (sourceBlock.block_type === 27) {
+						Debug.log(`🖼️ Image block request failed:`, requestError);
+						Debug.log(`🖼️ Error message:`, requestError.message);
+						Debug.log(`🖼️ Error status:`, requestError.status);
+
+						// 尝试从不同属性获取响应内容
+						if (requestError.response) {
+							Debug.log(`🖼️ Error response:`, requestError.response);
+						}
+						if (requestError.json) {
+							Debug.log(`🖼️ Error json:`, requestError.json);
+						}
+						if (requestError.text) {
+							Debug.log(`🖼️ Error text:`, requestError.text);
+						}
+						if (requestError.data) {
+							Debug.log(`🖼️ Error data:`, requestError.data);
+						}
+					}
+					throw requestError;
+				}
 
 				const data = response.json || JSON.parse(response.text);
 
@@ -5336,6 +6233,20 @@ export class FeishuApiService {
 					// 其他错误处理
 					Debug.error('Copy individual block error:', error);
 
+					// 添加详细的错误信息捕获
+					if (sourceBlock.block_type === 27) {
+						Debug.log(`🖼️ Image block API error details:`, error);
+						// 尝试从不同的错误对象中获取响应信息
+						if (error.response) {
+							Debug.log(`🖼️ Error response status:`, error.response.status);
+							Debug.log(`🖼️ Error response data:`, error.response.data);
+						} else if (error.json) {
+							Debug.log(`🖼️ Error json:`, error.json);
+						} else if (error.text) {
+							Debug.log(`🖼️ Error text:`, error.text);
+						}
+					}
+
 					if (retryCount >= maxRetries) {
 						// 如果是图片块错误，记录警告但不中断流程
 						if (sourceBlock.block_type === 27) {
@@ -5356,9 +6267,10 @@ export class FeishuApiService {
 	/**
 	 * 构建用于复制的块数据
 	 * @param sourceBlock 源块数据
+	 * @param processResult 可选的处理结果，用于图片处理
 	 * @returns 用于创建的块数据
 	 */
-	private buildBlockDataForCopy(sourceBlock: any): any {
+	private buildBlockDataForCopy(sourceBlock: any, processResult?: MarkdownProcessResult): any {
 		const blockType = sourceBlock.block_type;
 
 		// 根据块类型构建相应的数据结构
@@ -5427,10 +6339,7 @@ export class FeishuApiService {
 				};
 
 			case 27: // 图片块
-				return {
-					block_type: 27,
-					image: sourceBlock.image || {}
-				};
+				return this.buildImageBlockData(sourceBlock, processResult);
 
 			case 33: // View块（文件块容器）
 				return {
@@ -5456,6 +6365,61 @@ export class FeishuApiService {
 					...sourceBlock
 				};
 		}
+	}
+
+	/**
+	 * 构建图片块数据
+	 * @param sourceBlock 源图片块
+	 * @param processResult 处理结果，包含本地文件信息
+	 * @returns 图片块数据或占位符文本块
+	 */
+	private buildImageBlockData(sourceBlock: any, processResult?: MarkdownProcessResult): any {
+		// 对于跨文档复制的图片块，我们需要重新处理
+		// 暂时创建占位符，后续在复制完成后进行图片处理
+		if (sourceBlock.image?.token) {
+			// 这是一个来自其他文档的图片块，token无法跨文档使用
+			// 创建空图片块，后续通过图片处理服务填充
+			return {
+				block_type: 27,
+				image: {
+					width: sourceBlock.image?.width || 100,
+					height: sourceBlock.image?.height || 100,
+					align: sourceBlock.image?.align || 1
+				}
+			};
+		} else {
+			// 转换为图片占位符文本块
+			return this.imageProcessingService.createImagePlaceholderBlock(sourceBlock);
+		}
+	}
+
+	/**
+	 * 查找图片块对应的本地文件信息
+	 * @param sourceBlock 源图片块
+	 * @param processResult 处理结果
+	 * @returns 本地文件信息或null
+	 */
+	private findLocalFileForImageBlock(sourceBlock: any, processResult?: MarkdownProcessResult): LocalFileInfo | null {
+		if (!processResult || !processResult.localFiles) {
+			return null;
+		}
+
+		// 通过图片token或其他标识符查找对应的本地文件
+		// 这里需要根据实际的数据结构来实现匹配逻辑
+		const imageToken = sourceBlock.image?.token;
+		if (!imageToken) {
+			return null;
+		}
+
+		// 查找匹配的本地文件
+		return processResult.localFiles.find(file =>
+			file.isImage && (
+				file.placeholder.includes(imageToken) ||
+				file.fileName.includes(imageToken) ||
+				// 可以添加更多匹配逻辑
+				false
+			)
+		) || null;
 	}
 
 	/**
