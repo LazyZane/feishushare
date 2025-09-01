@@ -35,23 +35,12 @@ export class WikiSelectModal extends Modal {
 		// 创建导航区域
 		this.createNavigation(contentEl);
 
-		// 创建列表容器
+		// 创建列表容器（使用内置类并避免内联样式）
 		const listContainer = contentEl.createDiv('wiki-list-container');
-		listContainer.style.cssText = `
-			max-height: 400px;
-			overflow-y: auto;
-			border: 1px solid var(--background-modifier-border);
-			border-radius: 8px;
-			margin: 16px 0;
-		`;
 
-		// 创建按钮容器
+		// 创建按钮容器（使用 setting-item-control 提供布局）
 		const buttonContainer = contentEl.createDiv('button-container');
-		buttonContainer.style.cssText = `
-			display: flex;
-			justify-content: space-between;
-			margin-top: 16px;
-		`;
+		buttonContainer.addClass('setting-item-control');
 
 		// 选择当前位置按钮
 		const selectButton = buttonContainer.createEl('button', {
@@ -83,16 +72,7 @@ export class WikiSelectModal extends Modal {
 	 */
 	private createNavigation(containerEl: HTMLElement) {
 		const navEl = containerEl.createDiv('wiki-navigation');
-		navEl.style.cssText = `
-			display: flex;
-			align-items: center;
-			gap: 8px;
-			margin: 16px 0;
-			padding: 8px 12px;
-			background: var(--background-secondary);
-			border-radius: 6px;
-			font-size: 14px;
-		`;
+		navEl.addClass('setting-item');
 
 		if (this.mode === 'space') {
 			navEl.createSpan('nav-item').textContent = '选择知识库';
@@ -100,11 +80,7 @@ export class WikiSelectModal extends Modal {
 			// 知识库名称
 			const spaceEl = navEl.createSpan('nav-item');
 			spaceEl.textContent = this.currentSpace?.name || '未知知识库';
-			spaceEl.style.cssText = `
-				cursor: pointer;
-				color: var(--text-accent);
-				text-decoration: underline;
-			`;
+			spaceEl.addClass('mod-clickable');
 			spaceEl.onclick = () => this.backToSpaceSelection();
 
 			// 路径中的节点
@@ -118,18 +94,11 @@ export class WikiSelectModal extends Modal {
 				
 				if (index < this.currentPath.length - 1) {
 					// 不是最后一个，可以点击
-					nodeEl.style.cssText = `
-						cursor: pointer;
-						color: var(--text-accent);
-						text-decoration: underline;
-					`;
+					nodeEl.addClass('mod-clickable');
 					nodeEl.onclick = () => this.navigateToNode(index);
 				} else {
 					// 最后一个，当前位置
-					nodeEl.style.cssText = `
-						font-weight: bold;
-						color: var(--text-normal);
-					`;
+					nodeEl.addClass('mod-muted');
 				}
 			});
 		}
@@ -147,11 +116,6 @@ export class WikiSelectModal extends Modal {
 		// 显示加载状态
 		const loadingEl = containerEl.createDiv('loading-indicator');
 		loadingEl.textContent = '正在加载知识库列表...';
-		loadingEl.style.cssText = `
-			text-align: center;
-			padding: 20px;
-			color: var(--text-muted);
-		`;
 
 		try {
 			this.spaces = await this.feishuApi.getWikiSpaceList();
@@ -163,16 +127,11 @@ export class WikiSelectModal extends Modal {
 			this.renderSpaceList(containerEl);
 
 		} catch (error) {
-			console.error('Failed to load wiki spaces:', error);
+			import('./debug').then(({ Debug }) => Debug.error('Failed to load wiki spaces:', error));
 			containerEl.empty();
 			
 			const errorEl = containerEl.createDiv('error-message');
-			errorEl.textContent = `加载失败: ${error.message}`;
-			errorEl.style.cssText = `
-				text-align: center;
-				padding: 20px;
-				color: var(--text-error);
-			`;
+			errorEl.textContent = `加载失败: ${String((error as Error).message || error)}`;
 		} finally {
 			this.loading = false;
 		}
@@ -185,61 +144,30 @@ export class WikiSelectModal extends Modal {
 		if (this.spaces.length === 0) {
 			const emptyEl = containerEl.createDiv('empty-message');
 			emptyEl.textContent = '没有可访问的知识库';
-			emptyEl.style.cssText = `
-				text-align: center;
-				padding: 20px;
-				color: var(--text-muted);
-			`;
 			return;
 		}
 
 		this.spaces.forEach(space => {
 			const spaceEl = containerEl.createDiv('space-item');
-			spaceEl.style.cssText = `
-				display: flex;
-				align-items: center;
-				padding: 12px 16px;
-				cursor: pointer;
-				border-bottom: 1px solid var(--background-modifier-border);
-				transition: background-color 0.2s;
-			`;
 
 			// 知识库图标
 			const iconEl = spaceEl.createSpan('space-icon');
 			iconEl.textContent = '📚';
-			iconEl.style.cssText = `
-				margin-right: 12px;
-				font-size: 16px;
-			`;
 
 			// 知识库信息
 			const infoEl = spaceEl.createDiv('space-info');
-			infoEl.style.cssText = `flex: 1;`;
 
 			const nameEl = infoEl.createDiv('space-name');
 			nameEl.textContent = space.name;
-			nameEl.style.cssText = `
-				font-size: 14px;
-				font-weight: 500;
-			`;
 
 			if (space.description) {
 				const descEl = infoEl.createDiv('space-desc');
 				descEl.textContent = space.description;
-				descEl.style.cssText = `
-					font-size: 12px;
-					color: var(--text-muted);
-					margin-top: 2px;
-				`;
 			}
 
 			// 悬停效果
-			spaceEl.onmouseenter = () => {
-				spaceEl.style.backgroundColor = 'var(--background-modifier-hover)';
-			};
-			spaceEl.onmouseleave = () => {
-				spaceEl.style.backgroundColor = '';
-			};
+			spaceEl.addEventListener('mouseenter', () => spaceEl.addClass('is-hover'));
+			spaceEl.addEventListener('mouseleave', () => spaceEl.removeClass('is-hover'));
 
 			// 点击进入知识库
 			spaceEl.onclick = () => {
@@ -304,11 +232,6 @@ export class WikiSelectModal extends Modal {
 		// 显示加载状态
 		const loadingEl = containerEl.createDiv('loading-indicator');
 		loadingEl.textContent = '正在加载节点列表...';
-		loadingEl.style.cssText = `
-			text-align: center;
-			padding: 20px;
-			color: var(--text-muted);
-		`;
 
 		try {
 			const parentNodeToken = this.currentPath.length > 0
@@ -324,16 +247,11 @@ export class WikiSelectModal extends Modal {
 			this.renderNodeList(containerEl);
 
 		} catch (error) {
-			console.error('Failed to load wiki nodes:', error);
+			import('./debug').then(({ Debug }) => Debug.error('Failed to load wiki nodes:', error));
 			containerEl.empty();
 			
 			const errorEl = containerEl.createDiv('error-message');
-			errorEl.textContent = `加载失败: ${error.message}`;
-			errorEl.style.cssText = `
-				text-align: center;
-				padding: 20px;
-				color: var(--text-error);
-			`;
+			errorEl.textContent = `加载失败: ${String((error as Error).message || error)}`;
 		} finally {
 			this.loading = false;
 		}
@@ -349,48 +267,23 @@ export class WikiSelectModal extends Modal {
 		if (folderNodes.length === 0) {
 			const emptyEl = containerEl.createDiv('empty-message');
 			emptyEl.textContent = '此位置没有子文件夹';
-			emptyEl.style.cssText = `
-				text-align: center;
-				padding: 20px;
-				color: var(--text-muted);
-			`;
 			return;
 		}
 
 		folderNodes.forEach(node => {
 			const nodeEl = containerEl.createDiv('node-item');
-			nodeEl.style.cssText = `
-				display: flex;
-				align-items: center;
-				padding: 12px 16px;
-				cursor: pointer;
-				border-bottom: 1px solid var(--background-modifier-border);
-				transition: background-color 0.2s;
-			`;
 
 			// 节点图标
 			const iconEl = nodeEl.createSpan('node-icon');
 			iconEl.textContent = '📁';
-			iconEl.style.cssText = `
-				margin-right: 12px;
-				font-size: 16px;
-			`;
 
 			// 节点名称
 			const nameEl = nodeEl.createSpan('node-name');
 			nameEl.textContent = node.title;
-			nameEl.style.cssText = `
-				flex: 1;
-				font-size: 14px;
-			`;
 
 			// 悬停效果
-			nodeEl.onmouseenter = () => {
-				nodeEl.style.backgroundColor = 'var(--background-modifier-hover)';
-			};
-			nodeEl.onmouseleave = () => {
-				nodeEl.style.backgroundColor = '';
-			};
+			nodeEl.addEventListener('mouseenter', () => nodeEl.addClass('is-hover'));
+			nodeEl.addEventListener('mouseleave', () => nodeEl.removeClass('is-hover'));
 
 			// 点击进入节点
 			nodeEl.onclick = () => {

@@ -35,8 +35,8 @@ export const DEFAULT_SETTINGS: Partial<FeishuSettings> = {
 	refreshToken: '',
 	userInfo: null,
 
-	// 新增：目标类型默认设置
-	targetType: 'drive',
+	// 新增：目标类型默认设置（默认知识库）
+	targetType: 'wiki',
 
 	// 云空间设置
 	defaultFolderId: '',
@@ -57,8 +57,14 @@ export const DEFAULT_SETTINGS: Partial<FeishuSettings> = {
 	enableSubDocumentUpload: true,
 	enableLocalImageUpload: true,
 	enableLocalAttachmentUpload: true,
+	// 新增：代码块过滤（默认空列表）
+	codeBlockFilterLanguages: [],
 	// 新增：分享标记默认设置
 	enableShareMarkInFrontMatter: true,
+	// 新增：通知抑制默认设置（默认不抑制）
+	suppressShareNotices: false,
+	// 新增：简洁成功通知（默认关闭，使用带按钮的富通知）
+	simpleSuccessNotice: false,
 };
 
 export const FEISHU_ERROR_MESSAGES: Record<number, string> = {
@@ -70,6 +76,12 @@ export const FEISHU_ERROR_MESSAGES: Record<number, string> = {
 	99991665: 'refresh_token 无效',
 	99991666: 'refresh_token 已过期',
 };
+
+/**
+ * 成功通知模板（简单、易于修改）
+ * 可用占位符：{title}
+ */
+export const SUCCESS_NOTICE_TEMPLATE = '✅ 分享成功：{title}';
 
 /**
  * Obsidian Callout 类型到飞书样式的映射表

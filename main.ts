@@ -1,6 +1,6 @@
 import { Plugin, Notice, TFile, Menu, Editor, MarkdownView, Modal } from 'obsidian';
-import { FeishuSettings } from './src/types';
-import { DEFAULT_SETTINGS } from './src/constants';
+import { FeishuSettings, ShareResult } from './src/types';
+import { DEFAULT_SETTINGS, SUCCESS_NOTICE_TEMPLATE } from './src/constants';
 import { FeishuApiService } from './src/feishu-api';
 import { FeishuSettingTab } from './src/settings';
 import { MarkdownProcessor } from './src/markdown-processor';
@@ -66,47 +66,26 @@ export default class FeishuPlugin extends Plugin {
 		});
 
 		// 添加详细日志控制命令
-		this.addCommand({
-			id: 'toggle-feishu-verbose',
-			name: '🔍 切换飞书详细日志',
-			callback: () => {
-				if (Debug.isVerbose()) {
-					Debug.disableVerbose();
-					new Notice('🤫 飞书详细日志已关闭');
-				} else {
-					Debug.enableVerbose();
-					new Notice('🔍 飞书详细日志已开启');
-				}
-			}
-		});
+		// （已移除）详细日志控制命令
 
 		// 添加API测试命令
 		this.addCommand({
 			id: 'test-feishu-api',
 			name: '🧪 测试飞书API连接',
 			callback: async () => {
-				console.log('🧪 Starting API test...');
+				this.log('🧪 Starting API test...');
 				try {
 					const testResult = await this.feishuApi.testApiConnection();
-					console.log('🧪 API test result:', testResult);
+					this.log(`🧪 API test result: ${JSON.stringify(testResult)}`);
 					new Notice(`API测试结果: ${testResult.success ? '成功' : '失败 - ' + testResult.error}`);
 				} catch (error) {
-					console.error('🧪 API test error:', error);
-					new Notice(`API测试错误: ${error.message}`);
+					this.log(`🧪 API test error: ${(error as Error).message}`, 'error');
+					new Notice(`API测试错误: ${(error as Error).message}`);
 				}
 			}
 		});
 
-		// 添加日志状态查看命令
-		this.addCommand({
-			id: 'show-feishu-debug-status',
-			name: '📊 查看飞书调试状态',
-			callback: () => {
-				const status = Debug.getStatus();
-				new Notice(`📊 飞书调试状态: ${status}`, 3000);
-				Debug.log('📊 Current debug status:', status);
-			}
-		});
+		// （已移除）日志状态查看命令
 	}
 
 	/**
@@ -159,7 +138,7 @@ export default class FeishuPlugin extends Plugin {
 	/**
 	 * 处理OAuth回调
 	 */
-	private async handleOAuthCallback(params: any): Promise<void> {
+	private async handleOAuthCallback(params: Record<string, string>): Promise<void> {
 		this.log('Processing OAuth callback');
 
 		if (params.code) {
@@ -226,14 +205,14 @@ export default class FeishuPlugin extends Plugin {
 	async shareFile(file: TFile): Promise<void> {
 		this.log(`Starting file share process for: ${file.path}`);
 
-		// 创建持续状态提示
-		const statusNotice = new Notice('🔄 正在分享到飞书...', 0); // 0表示不自动消失
+		// 创建持续状态提示（可抑制）
+		const statusNotice = this.settings.suppressShareNotices ? undefined : new Notice('🔄 正在分享到飞书...', 0); // 0表示不自动消失
 
 		try {
 			// 检查基本授权状态
 			if (!this.settings.accessToken || !this.settings.userInfo) {
 				this.log('Authorization required', 'warn');
-				statusNotice.hide();
+				statusNotice?.hide();
 				new Notice('❌ 请先在设置中完成飞书授权');
 				return;
 			}
@@ -254,7 +233,8 @@ export default class FeishuPlugin extends Plugin {
 				this.settings.enableSubDocumentUpload,
 				this.settings.enableLocalImageUpload,
 				this.settings.enableLocalAttachmentUpload,
-				this.settings.titleSource
+				this.settings.titleSource,
+				this.settings.codeBlockFilterLanguages || []
 			);
 
 			// 根据设置提取文档标题
@@ -267,19 +247,19 @@ export default class FeishuPlugin extends Plugin {
 
 			// 检查是否为更新模式（存在feishushare标记）
 			const isUpdateMode = this.checkUpdateMode(processResult.frontMatter);
-			let result: any;
+			let result: ShareResult;
 			let urlChanged = false;
 
 			if (isUpdateMode.shouldUpdate) {
 				this.log(`Update mode detected for existing document: ${isUpdateMode.feishuUrl}`);
-				statusNotice.setMessage('🔍 检查现有文档可访问性...');
+				statusNotice?.setMessage('🔍 检查现有文档可访问性...');
 
 				// 检查现有URL是否可访问
 				const urlAccessible = await this.feishuApi.checkDocumentUrlAccessibility(isUpdateMode.feishuUrl!);
 
 				if (urlAccessible.isAccessible) {
 					this.log('Existing document is accessible, updating content');
-					statusNotice.setMessage('🔄 正在更新现有文档...');
+					statusNotice?.setMessage('🔄 正在更新现有文档...');
 
 					// 调用更新现有文档的方法
 					result = await this.feishuApi.updateExistingDocument(
@@ -290,21 +270,21 @@ export default class FeishuPlugin extends Plugin {
 					);
 				} else if (urlAccessible.needsReauth) {
 					this.log(`Token needs reauth, will retry after authorization: ${urlAccessible.error}`);
-					statusNotice.setMessage('🔑 需要重新授权，授权后将重试更新...');
+					statusNotice?.setMessage('🔑 需要重新授权，授权后将重试更新...');
 
 					// 直接触发重新授权，不创建完整文档
 					const authSuccess = await this.feishuApi.ensureValidTokenWithReauth(statusNotice);
 
 					if (authSuccess) {
 						this.log('Authorization completed, retrying original document access');
-						statusNotice.setMessage('🔄 重新检查原文档可访问性...');
+						statusNotice?.setMessage('🔄 重新检查原文档可访问性...');
 
 						// 授权成功后，重新检查原文档可访问性
 						const retryAccessible = await this.feishuApi.checkDocumentUrlAccessibility(isUpdateMode.feishuUrl!);
 
 						if (retryAccessible.isAccessible) {
 							this.log('Original document is now accessible after reauth, updating it');
-							statusNotice.setMessage('🔄 正在更新原文档...');
+							statusNotice?.setMessage('🔄 正在更新原文档...');
 
 							// 直接更新原文档
 							result = await this.feishuApi.updateExistingDocument(
@@ -328,7 +308,7 @@ export default class FeishuPlugin extends Plugin {
 					}
 				} else {
 					this.log(`Existing document is not accessible: ${urlAccessible.error}, creating new document`);
-					statusNotice.setMessage('📄 原文档不可访问，正在创建新文档...');
+					statusNotice?.setMessage('📄 原文档不可访问，正在创建新文档...');
 
 					// 原文档不可访问，创建新文档
 					result = await this.feishuApi.shareMarkdownWithFiles(title, processResult, statusNotice);
@@ -346,7 +326,7 @@ export default class FeishuPlugin extends Plugin {
 			}
 
 			// 隐藏状态提示
-			statusNotice.hide();
+			statusNotice?.hide();
 
 			if (result.success) {
 				if (isUpdateMode.shouldUpdate && !urlChanged) {
@@ -380,8 +360,10 @@ export default class FeishuPlugin extends Plugin {
 							this.log('Share mark added/updated successfully');
 
 							// 如果URL发生了变化，显示特殊通知
-							if (urlChanged && isUpdateMode.shouldUpdate) {
-								new Notice(`📄 文档链接已更新（原链接不可访问）\n新链接：${result.url}`, 8000);
+							if (!this.settings.suppressShareNotices) {
+								if (urlChanged && isUpdateMode.shouldUpdate) {
+									new Notice(`📄 文档链接已更新（原链接不可访问）\n新链接：${result.url}`, 8000);
+								}
 							}
 						} catch (error) {
 							this.log(`Failed to add/update share mark: ${error.message}`, 'warn');
@@ -399,7 +381,7 @@ export default class FeishuPlugin extends Plugin {
 
 		} catch (error) {
 			// 确保隐藏状态提示
-			statusNotice.hide();
+			statusNotice?.hide();
 			this.handleError(error as Error, '文件分享');
 		}
 	}
@@ -460,7 +442,7 @@ export default class FeishuPlugin extends Plugin {
 	 * @param frontMatter Front Matter数据
 	 * @returns 更新模式检查结果
 	 */
-	private checkUpdateMode(frontMatter: any): {shouldUpdate: boolean, feishuUrl?: string} {
+	private checkUpdateMode(frontMatter: Record<string, unknown> | null): {shouldUpdate: boolean, feishuUrl?: string} {
 		if (!frontMatter) {
 			return { shouldUpdate: false };
 		}
@@ -490,7 +472,12 @@ export default class FeishuPlugin extends Plugin {
 		// 获取东8区时间
 		const now = new Date();
 		const chinaTime = new Date(now.getTime() + (8 * 60 * 60 * 1000)); // UTC+8
-		const currentTime = chinaTime.toISOString().replace('Z', '+08:00');
+		const yyyy = chinaTime.getUTCFullYear();
+		const mm = String(chinaTime.getUTCMonth() + 1).padStart(2, '0');
+		const dd = String(chinaTime.getUTCDate()).padStart(2, '0');
+		const HH = String(chinaTime.getUTCHours()).padStart(2, '0');
+		const MM = String(chinaTime.getUTCMinutes()).padStart(2, '0');
+		const currentTime = `${yyyy}-${mm}-${dd} ${HH}:${MM}`;
 
 		// 检查是否有Front Matter
 		if (!content.startsWith('---\n') && !content.startsWith('---\r\n')) {
@@ -542,57 +529,52 @@ export default class FeishuPlugin extends Plugin {
 	/**
 	 * 显示分享成功的通知
 	 */
-	private showSuccessNotification(result: any): void {
-		if (result.url) {
-			// 创建简化的成功通知，包含复制和打开功能
-			const message = `✅ 分享成功！文档：${result.title}`;
-			const notice = new Notice(message, 8000);
-
-			// 创建按钮容器
-			const buttonContainer = notice.noticeEl.createEl('div');
-			buttonContainer.style.cssText = `
-				display: flex;
-				gap: 8px;
-				margin-top: 8px;
-			`;
-
-			// 添加复制链接功能
-			const copyButton = buttonContainer.createEl('button', {
-				text: '📋 复制链接',
-				cls: 'mod-cta'
-			});
-			copyButton.style.cssText = `flex: 1;`;
-
-			copyButton.onclick = async () => {
-				try {
-					await navigator.clipboard.writeText(result.url);
-					this.log('URL copied to clipboard');
-					copyButton.textContent = '✅ 已复制';
-					setTimeout(() => {
-						copyButton.textContent = '📋 复制链接';
-					}, 2000);
-				} catch (error) {
-					this.log(`Failed to copy URL: ${(error as Error).message}`, 'error');
-					new Notice('❌ 复制失败');
-				}
-			};
-
-			// 添加打开链接功能
-			const openButton = buttonContainer.createEl('button', {
-				text: '🔗 打开',
-				cls: 'mod-muted'
-			});
-			openButton.style.cssText = `flex: 1;`;
-
-			openButton.onclick = () => {
-				if (result.url) {
-					window.open(result.url, '_blank');
-				}
-			};
-		} else {
-			// 没有URL时的简单成功通知
-			new Notice(`✅ 分享成功！文档标题：${result.title}`);
+	private showSuccessNotification(result: ShareResult): void {
+		if (this.settings.simpleSuccessNotice || !result.url) {
+			const titleText = result?.title || '文档';
+			const message = SUCCESS_NOTICE_TEMPLATE.replace('{title}', titleText);
+			new Notice(message, 5000);
+			return;
 		}
+
+		// 富通知：带复制与打开按钮
+		const message = `✅ 分享成功！文档：${result.title}`;
+		const notice = new Notice(message, 8000);
+
+		const buttonContainer = notice.noticeEl.createEl('div', { cls: 'setting-item-control' });
+
+		// 复制按钮
+		const copyButton = buttonContainer.createEl('button', {
+			text: '📋 复制链接',
+			cls: 'mod-cta'
+		});
+		copyButton.addClass('mod-cta');
+		copyButton.onclick = async () => {
+			try {
+				const urlToCopy = result.url as string;
+				await navigator.clipboard.writeText(urlToCopy);
+				this.log('URL copied to clipboard');
+				copyButton.textContent = '✅ 已复制';
+				setTimeout(() => {
+					copyButton.textContent = '📋 复制链接';
+				}, 2000);
+			} catch (error) {
+				this.log(`Failed to copy URL: ${(error as Error).message}`, 'error');
+				new Notice('❌ 复制失败');
+			}
+		};
+
+		// 打开按钮
+		const openButton = buttonContainer.createEl('button', {
+			text: '🔗 打开',
+			cls: 'mod-muted'
+		});
+		openButton.addClass('mod-muted');
+		openButton.onclick = () => {
+			if (result.url) {
+				window.open(result.url, '_blank');
+			}
+		};
 	}
 
 	/**

@@ -19,7 +19,6 @@ export class ManualAuthModal extends Modal {
 
 		// 说明文字
 		const descEl = contentEl.createDiv('setting-item-description');
-		descEl.style.marginBottom = '20px';
 
 		const titleP = descEl.createEl('p');
 		const titleStrong = titleP.createEl('strong');
@@ -35,13 +34,7 @@ export class ManualAuthModal extends Modal {
 		stepsList.createEl('li').textContent = '将完整URL粘贴到下方输入框中';
 		stepsList.createEl('li').textContent = '点击"完成授权"按钮';
 
-		const tipDiv = descEl.createDiv();
-		tipDiv.style.cssText = `
-			background: var(--background-modifier-success);
-			padding: 10px;
-			border-radius: 4px;
-			margin-top: 10px;
-		`;
+		const tipDiv = descEl.createDiv({ cls: 'setting-item' });
 		const tipStrong = tipDiv.createEl('strong');
 		tipStrong.textContent = '💡 提示：';
 		tipDiv.appendText('无需手动提取授权码，直接复制完整的回调URL即可！');
@@ -77,8 +70,7 @@ export class ManualAuthModal extends Modal {
 					.onChange(value => {
 						callbackUrl = value.trim();
 					});
-				text.inputEl.style.width = '100%';
-				text.inputEl.style.height = '80px';
+				text.inputEl.addClass('mod-align-left');
 			});
 
 		// 完成授权按钮
@@ -143,8 +135,8 @@ export class ManualAuthModal extends Modal {
 			}
 
 		} catch (error) {
-			console.error('Process callback error:', error);
-			new Notice(`❌ 处理授权时发生错误: ${error.message}`);
+			import('./debug').then(({ Debug }) => Debug.error('Process callback error:', error));
+			new Notice(`❌ 处理授权时发生错误: ${String((error as Error).message || error)}`);
 		}
 	}
 

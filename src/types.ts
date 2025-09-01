@@ -79,8 +79,14 @@ export interface FeishuSettings {
 	enableSubDocumentUpload: boolean;
 	enableLocalImageUpload: boolean;
 	enableLocalAttachmentUpload: boolean;
+	// 新增：代码块过滤（多选，命中则移除）
+	codeBlockFilterLanguages: string[];
 	// 新增：分享标记设置
 	enableShareMarkInFrontMatter: boolean;
+	// 新增：通知抑制设置（取消分享状态通知）
+	suppressShareNotices: boolean;
+	// 新增：简洁成功通知（仅一行提示）
+	simpleSuccessNotice: boolean;
 }
 
 export interface FeishuUserInfo {
@@ -270,6 +276,8 @@ export interface ProcessContext {
 	enableSubDocumentUpload?: boolean;
 	enableLocalImageUpload?: boolean;
 	enableLocalAttachmentUpload?: boolean;
+	// 代码块过滤设置：命中语言则移除对应 fenced code block
+	codeBlockFilterLanguages?: string[];
 	// Front Matter 处理设置
 	frontMatterHandling?: 'remove' | 'keep-as-code';
 	titleSource?: 'filename' | 'frontmatter';

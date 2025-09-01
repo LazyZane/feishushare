@@ -78,10 +78,9 @@ export class FeishuSettingTab extends PluginSettingTab {
 		const statusDesc = authStatusInfo.createDiv('setting-item-description');
 		if (this.plugin.settings.userInfo) {
 			const statusSpan = statusDesc.createEl('span', { text: '✅ 已授权' });
-			statusSpan.style.color = 'var(--text-success)';
+			statusSpan.addClass('mod-success');
 			statusDesc.createEl('br');
-			const userInfoDiv = statusDesc.createDiv();
-			userInfoDiv.style.marginTop = '4px';
+			const userInfoDiv = statusDesc.createDiv({ cls: 'setting-item-description' });
 			const userLabel = userInfoDiv.createEl('strong');
 			userLabel.textContent = '用户：';
 			userInfoDiv.appendText(this.plugin.settings.userInfo.name);
@@ -91,7 +90,7 @@ export class FeishuSettingTab extends PluginSettingTab {
 			userInfoDiv.appendText(this.plugin.settings.userInfo.email);
 		} else {
 			const statusSpan = statusDesc.createEl('span', { text: '❌ 未授权' });
-			statusSpan.style.color = 'var(--text-error)';
+			statusSpan.addClass('mod-warning');
 		}
 
 		// 自动授权按钮（推荐）
@@ -187,9 +186,9 @@ export class FeishuSettingTab extends PluginSettingTab {
 					});
 			});
 
-		// Front Matter 处理设置
+		// 文档属性（Front Matter）处理设置
 		new Setting(containerEl)
-			.setName('Front Matter 处理')
+			.setName('文档属性（Front Matter）')
 			.setDesc('选择如何处理笔记顶部的 YAML 属性区')
 			.addDropdown(dropdown => {
 				dropdown
@@ -244,12 +243,61 @@ export class FeishuSettingTab extends PluginSettingTab {
 		// 分享标记开关
 		new Setting(containerEl)
 			.setName('自动添加分享标记')
-			.setDesc('分享成功后，自动在笔记的 Front Matter 中添加分享标记（feishushare: true、分享链接和时间）')
+			.setDesc('分享成功后，自动在笔记的 文档属性（Front Matter） 中添加分享标记（feishushare: true、分享链接和时间）')
 			.addToggle(toggle => {
 				toggle
 					.setValue(this.plugin.settings.enableShareMarkInFrontMatter)
 					.onChange(async (value) => {
 						this.plugin.settings.enableShareMarkInFrontMatter = value;
+						await this.plugin.saveSettings();
+					});
+			});
+
+		// 代码块过滤（多选：每行一个语言名）
+		new Setting(containerEl)
+			.setName('代码块过滤')
+			.setDesc('每行一个代码块语言（大小写不敏感）。匹配的 fenced code 将被移除。例如：meta-bind-embed、dataviewjs')
+			.then(setting => {
+				const textarea = setting.controlEl.createEl('textarea', {
+					attr: {
+						rows: '4',
+						placeholder: 'meta-bind-embed\ndataviewjs'
+					}
+				});
+				textarea.addClass('mod-align-left');
+				textarea.value = (this.plugin.settings.codeBlockFilterLanguages || []).join('\n');
+				textarea.addEventListener('change', async () => {
+					const lines = textarea.value
+						.split(/\r?\n/)
+						.map(s => s.trim())
+						.filter(Boolean);
+					this.plugin.settings.codeBlockFilterLanguages = lines;
+					await this.plugin.saveSettings();
+				});
+			});
+
+		// 通知设置部分
+		containerEl.createEl('h3', { text: '🔔 通知设置' });
+		new Setting(containerEl)
+			.setName('取消分享状态通知')
+			.setDesc('启用后不显示分享“过程状态”通知（错误和最终成功仍提示）')
+			.addToggle(toggle => {
+				toggle
+					.setValue(!!this.plugin.settings.suppressShareNotices)
+					.onChange(async (value) => {
+						this.plugin.settings.suppressShareNotices = value;
+						await this.plugin.saveSettings();
+					});
+			});
+
+		new Setting(containerEl)
+			.setName('简洁成功通知')
+			.setDesc('启用后成功仅显示一行提示；关闭时显示带“复制/打开”按钮的通知')
+			.addToggle(toggle => {
+				toggle
+					.setValue(!!this.plugin.settings.simpleSuccessNotice)
+					.onChange(async (value) => {
+						this.plugin.settings.simpleSuccessNotice = value;
 						await this.plugin.saveSettings();
 					});
 			});
@@ -341,6 +389,7 @@ export class FeishuSettingTab extends PluginSettingTab {
 		step3.createEl('strong', { text: '添加应用权限：' });
 		step3.appendText('在"权限管理"中添加以下权限：');
 		const permList = step3.createEl('ul');
+		permList.createEl('li', { text: 'user_access_token - 用户身份权限（登录用户访问）' });
 		permList.createEl('li', { text: 'contact:user.base:readonly - 获取用户基本信息' });
 		permList.createEl('li', { text: 'docx:document - 创建、编辑文档' });
 		permList.createEl('li', { text: 'drive:drive - 访问云空间文件' });
@@ -426,35 +475,16 @@ private addRewardSection(containerEl: HTMLElement) {
 	});
 
 	// 创建二维码容器
-	const qrContainer = rewardSection.createDiv();
-	qrContainer.style.cssText = `
-		text-align: center;
-		margin: 16px 0;
-		padding: 16px;
-		background-color: var(--background-secondary);
-		border-radius: 8px;
-	`;
+	const qrContainer = rewardSection.createDiv({ cls: 'setting-item-description' });
 
 	// 添加二维码图片
 	const qrImage = qrContainer.createEl('img');
-	qrImage.style.cssText = `
-		max-width: 200px;
-		max-height: 200px;
-		width: auto;
-		height: auto;
-		border-radius: 4px;
-	`;
 	// 使用Base64编码的图片
 	qrImage.src = 'data:image/jpeg;base64,' + this.getRewardQRCodeBase64();
 	qrImage.alt = '微信打赏二维码';
 
 	// 添加提示文字
 	const hintP = qrContainer.createEl('p', { text: '微信扫一扫，支持作者' });
-	hintP.style.cssText = `
-		margin-top: 8px;
-		font-size: 14px;
-		color: var(--text-muted);
-	`;
 }
 
 /**
@@ -469,7 +499,7 @@ private getRewardQRCodeBase64(): string {
 private startAutoAuth() {
 		if (!this.plugin.settings.appId || !this.plugin.settings.appSecret) {
 			new Notice('❌ 请先配置 App ID 和 App Secret');
-			console.error('Missing App ID or App Secret');
+			import('./debug').then(({ Debug }) => Debug.error('Missing App ID or App Secret'));
 			return;
 		}
 
@@ -492,7 +522,7 @@ private startAutoAuth() {
 			window.addEventListener('feishu-auth-success', successHandler);
 
 		} catch (error) {
-			console.error('Auto auth error:', error);
+			import('./debug').then(({ Debug }) => Debug.error('Auto auth error:', error));
 			new Notice(`❌ 自动授权失败: ${error.message}`);
 		}
 	}
@@ -517,7 +547,7 @@ private startAutoAuth() {
 			);
 			modal.open();
 		} catch (error) {
-			console.error('[Feishu Plugin] Failed to start manual auth:', error);
+			import('./debug').then(({ Debug }) => Debug.error('[Feishu Plugin] Failed to start manual auth:', error));
 			new Notice('❌ 启动授权失败，请重试');
 		}
 	}
@@ -527,6 +557,11 @@ private startAutoAuth() {
 	 */
 	private showFolderSelectModal(): void {
 		try {
+			// 授权前置校验
+			if (!this.plugin.settings.accessToken || !this.plugin.settings.userInfo) {
+				new Notice('❌ 请先在设置中完成飞书授权');
+				return;
+			}
 			const modal = new FolderSelectModal(
 				this.app,
 				this.plugin.feishuApi,
@@ -539,7 +574,7 @@ private startAutoAuth() {
 							this.plugin.settings.defaultFolderName = selectedFolder.name;
 						} else {
 							// 用户选择了根目录（我的空间）
-							console.log('[Feishu Plugin] Root folder selected (我的空间)');
+							import('./debug').then(({ Debug }) => Debug.log('[Feishu Plugin] Root folder selected (我的空间)'));
 							this.plugin.settings.defaultFolderId = '';
 							this.plugin.settings.defaultFolderName = '我的空间';
 						}
@@ -548,7 +583,7 @@ private startAutoAuth() {
 						new Notice('✅ 默认文件夹设置已保存');
 						this.display(); // 刷新设置界面
 					} catch (error) {
-						console.error('[Feishu Plugin] Failed to save folder settings:', error);
+						import('./debug').then(({ Debug }) => Debug.error('[Feishu Plugin] Failed to save folder settings:', error));
 						new Notice('❌ 保存文件夹设置失败');
 					}
 				}
@@ -556,7 +591,7 @@ private startAutoAuth() {
 
 			modal.open();
 		} catch (error) {
-			console.error('[Feishu Plugin] Failed to open folder selection modal:', error);
+			import('./debug').then(({ Debug }) => Debug.error('[Feishu Plugin] Failed to open folder selection modal:', error));
 			new Notice('❌ 打开文件夹选择失败');
 		}
 	}
@@ -623,6 +658,11 @@ private startAutoAuth() {
 	 */
 	private async showWikiSelectModal() {
 		try {
+			// 授权前置校验
+			if (!this.plugin.settings.accessToken || !this.plugin.settings.userInfo) {
+				new Notice('❌ 请先在设置中完成飞书授权');
+				return;
+			}
 			const modal = new WikiSelectModal(
 				this.app,
 				this.plugin.feishuApi,
@@ -649,7 +689,7 @@ private startAutoAuth() {
 
 			modal.open();
 		} catch (error) {
-			console.error('[Feishu Plugin] Failed to open wiki selection modal:', error);
+			import('./debug').then(({ Debug }) => Debug.error('[Feishu Plugin] Failed to open wiki selection modal:', error));
 			new Notice('❌ 打开知识库选择失败');
 		}
 	}

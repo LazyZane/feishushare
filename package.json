@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-feishu-direct",
-	"version": "2.5.0",
+	"version": "2.5.1",
 	"description": "直接分享Markdown文档到飞书，无需代理服务器",
 	"main": "main.js",
 	"scripts": {

@@ -222,11 +222,22 @@ export class MarkdownProcessor {
 	/**
 	 * 处理 Obsidian 特有的代码块语法
 	 */
-	private processCodeBlocks(content: string): string {
-		// 保持所有代码块原样，包括 Mermaid
-		return content.replace(/```(\w+)[\s\S]*?```/g, (match, language) => {
-			// 保持所有代码块原样
-			return match;
+	private processCodeBlocks(content: string, context?: ProcessContext): string {
+		// 根据设置过滤指定语言的 fenced code block；未命中则保持原样
+		const list = (context?.codeBlockFilterLanguages || []).map(s => s.toLowerCase());
+		if (list.length === 0) {
+			return content;
+		}
+
+		// 支持 ``` 或 ~~~ 的围栏代码块，提取 info string 首段语言名
+		const fencedRegex = /(^|\n)(```|~~~)\s*([^\n]*)\n([\s\S]*?)\n\2\s*(?=\n|$)/g;
+		return content.replace(fencedRegex, (full, leading, fence, info, body) => {
+			const lang = (info || '').trim().split(/\s+/)[0].toLowerCase();
+			if (lang && list.includes(lang)) {
+				// 命中过滤语言，整段移除
+				return leading || '';
+			}
+			return full;
 		});
 	}
 
@@ -287,14 +298,14 @@ export class MarkdownProcessor {
 			// 处理内容，移除每行开头的 > 符号，保持原有的格式结构
 			const lines = body.split('\n');
 			const processedLines = lines
-				.map(line => {
+				.map((line: string) => {
 					// 移除开头的 > 符号，但保持其他格式
 					if (line.startsWith('>')) {
 						return line.replace(/^>\s?/, '');
 					}
 					return line; // 保持空行
 				})
-				.filter((line, index, arr) => {
+				.filter((line: string, index: number, arr: string[]) => {
 					// 移除末尾的连续空行，但保持中间的空行
 					if (line === '' && index === arr.length - 1) {
 						return false;
@@ -389,6 +400,7 @@ export class MarkdownProcessor {
 		let processedContent = content;
 
 		// 按顺序处理各种语法
+		// 注意：此处没有传上下文，代码块过滤只在带上下文的流程中生效
 		processedContent = this.processWikiLinks(processedContent);
 		processedContent = this.processBlockReferences(processedContent);
 		processedContent = this.processEmbeds(processedContent);
@@ -413,7 +425,8 @@ export class MarkdownProcessor {
 		enableSubDocumentUpload: boolean = true,
 		enableLocalImageUpload: boolean = true,
 		enableLocalAttachmentUpload: boolean = true,
-		titleSource: 'filename' | 'frontmatter' = 'filename'
+		titleSource: 'filename' | 'frontmatter' = 'filename',
+		codeBlockFilterLanguages: string[] = []
 	): MarkdownProcessResult {
 		// 重置本地文件列表和 Callout 列表
 		this.localFiles = [];
@@ -430,6 +443,7 @@ export class MarkdownProcessor {
 			enableSubDocumentUpload,
 			enableLocalImageUpload,
 			enableLocalAttachmentUpload,
+			codeBlockFilterLanguages,
 			frontMatterHandling,
 			titleSource
 		};
@@ -621,6 +635,7 @@ export class MarkdownProcessor {
 		let processedContent = content;
 
 		// 按顺序处理各种语法
+		processedContent = this.processCodeBlocks(processedContent, context); // 先做代码块过滤
 		processedContent = this.processCallouts(processedContent); // 先处理 Callout，因为它们是块级元素
 		processedContent = this.processWikiLinks(processedContent, context);
 		processedContent = this.processBlockReferences(processedContent);
@@ -630,7 +645,6 @@ export class MarkdownProcessor {
 		processedContent = this.processTags(processedContent);
 		processedContent = this.processHighlights(processedContent);
 		processedContent = this.processMathFormulas(processedContent);
-		processedContent = this.processCodeBlocks(processedContent);
 		processedContent = this.cleanupWhitespace(processedContent);
 
 		return processedContent;
@@ -784,10 +798,15 @@ export class MarkdownProcessor {
 	 * @returns 更新后的文件内容
 	 */
 	addShareMarkToFrontMatter(content: string, shareUrl: string): string {
-		// 获取东8区时间
+		// 获取东8区时间并格式化为 YYYY-MM-DD HH:mm
 		const now = new Date();
 		const chinaTime = new Date(now.getTime() + (8 * 60 * 60 * 1000)); // UTC+8
-		const currentTime = chinaTime.toISOString().replace('Z', '+08:00');
+		const yyyy = chinaTime.getUTCFullYear();
+		const mm = String(chinaTime.getUTCMonth() + 1).padStart(2, '0');
+		const dd = String(chinaTime.getUTCDate()).padStart(2, '0');
+		const HH = String(chinaTime.getUTCHours()).padStart(2, '0');
+		const MM = String(chinaTime.getUTCMinutes()).padStart(2, '0');
+		const currentTime = `${yyyy}-${mm}-${dd} ${HH}:${MM}`;
 
 		// 检查是否有Front Matter
 		if (!content.startsWith('---\n') && !content.startsWith('---\r\n')) {

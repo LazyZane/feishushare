@@ -49,23 +49,12 @@ export class FolderSelectModal extends Modal {
 		// 创建面包屑导航
 		this.createBreadcrumb(contentEl);
 
-		// 创建文件夹列表容器
+		// 创建文件夹列表容器（避免内联样式，使用默认布局）
 		const listContainer = contentEl.createDiv('folder-list-container');
-		listContainer.style.cssText = `
-			max-height: 400px;
-			overflow-y: auto;
-			border: 1px solid var(--background-modifier-border);
-			border-radius: 8px;
-			margin: 16px 0;
-		`;
 
-		// 创建按钮容器
+		// 创建按钮容器（使用 setting-item-control 提供布局）
 		const buttonContainer = contentEl.createDiv('button-container');
-		buttonContainer.style.cssText = `
-			display: flex;
-			justify-content: space-between;
-			margin-top: 16px;
-		`;
+		buttonContainer.addClass('setting-item-control');
 
 		// 选择当前文件夹按钮
 		const selectButton = buttonContainer.createEl('button', {
@@ -97,25 +86,12 @@ export class FolderSelectModal extends Modal {
 	 */
 	private createBreadcrumb(containerEl: HTMLElement) {
 		const breadcrumbEl = containerEl.createDiv('folder-breadcrumb');
-		breadcrumbEl.style.cssText = `
-			display: flex;
-			align-items: center;
-			gap: 8px;
-			margin: 16px 0;
-			padding: 8px 12px;
-			background: var(--background-secondary);
-			border-radius: 6px;
-			font-size: 14px;
-		`;
+		breadcrumbEl.addClass('setting-item');
 
 		// 根目录
 		const rootEl = breadcrumbEl.createSpan('breadcrumb-item');
 		rootEl.textContent = '我的空间';
-		rootEl.style.cssText = `
-			cursor: pointer;
-			color: var(--text-accent);
-			text-decoration: underline;
-		`;
+		rootEl.addClass('mod-clickable');
 		rootEl.onclick = () => this.navigateToRoot();
 
 		// 路径中的文件夹
@@ -129,18 +105,11 @@ export class FolderSelectModal extends Modal {
 			
 			if (index < this.currentPath.length - 1) {
 				// 不是最后一个，可以点击
-				folderEl.style.cssText = `
-					cursor: pointer;
-					color: var(--text-accent);
-					text-decoration: underline;
-				`;
+				folderEl.addClass('mod-clickable');
 				folderEl.onclick = () => this.navigateToFolder(index);
 			} else {
 				// 最后一个，当前位置
-				folderEl.style.cssText = `
-					font-weight: bold;
-					color: var(--text-normal);
-				`;
+				folderEl.addClass('mod-muted');
 			}
 		});
 	}
@@ -157,11 +126,6 @@ export class FolderSelectModal extends Modal {
 		// 显示加载状态
 		const loadingEl = containerEl.createDiv('loading-indicator');
 		loadingEl.textContent = '正在加载文件夹...';
-		loadingEl.style.cssText = `
-			text-align: center;
-			padding: 20px;
-			color: var(--text-muted);
-		`;
 
 		try {
 			const parentFolderId = this.currentPath.length > 0
@@ -178,16 +142,11 @@ export class FolderSelectModal extends Modal {
 			this.renderFolderList(containerEl);
 
 		} catch (error) {
-			console.error('Failed to load folders:', error);
+			import('./debug').then(({ Debug }) => Debug.error('Failed to load folders:', error));
 			containerEl.empty();
 			
 			const errorEl = containerEl.createDiv('error-message');
-			errorEl.textContent = `加载失败: ${error.message}`;
-			errorEl.style.cssText = `
-				text-align: center;
-				padding: 20px;
-				color: var(--text-error);
-			`;
+			errorEl.textContent = `加载失败: ${String((error as Error).message || error)}`;
 		} finally {
 			this.loading = false;
 		}
@@ -200,48 +159,23 @@ export class FolderSelectModal extends Modal {
 		if (this.folders.length === 0) {
 			const emptyEl = containerEl.createDiv('empty-message');
 			emptyEl.textContent = '此文件夹为空';
-			emptyEl.style.cssText = `
-				text-align: center;
-				padding: 20px;
-				color: var(--text-muted);
-			`;
 			return;
 		}
 
 		this.folders.forEach(folder => {
 			const folderEl = containerEl.createDiv('folder-item');
-			folderEl.style.cssText = `
-				display: flex;
-				align-items: center;
-				padding: 12px 16px;
-				cursor: pointer;
-				border-bottom: 1px solid var(--background-modifier-border);
-				transition: background-color 0.2s;
-			`;
 
 			// 文件夹图标
 			const iconEl = folderEl.createSpan('folder-icon');
 			iconEl.textContent = '📁';
-			iconEl.style.cssText = `
-				margin-right: 12px;
-				font-size: 16px;
-			`;
 
 			// 文件夹名称
 			const nameEl = folderEl.createSpan('folder-name');
 			nameEl.textContent = folder.name;
-			nameEl.style.cssText = `
-				flex: 1;
-				font-size: 14px;
-			`;
 
 			// 悬停效果
-			folderEl.onmouseenter = () => {
-				folderEl.style.backgroundColor = 'var(--background-modifier-hover)';
-			};
-			folderEl.onmouseleave = () => {
-				folderEl.style.backgroundColor = '';
-			};
+			folderEl.addEventListener('mouseenter', () => folderEl.addClass('is-hover'));
+			folderEl.addEventListener('mouseleave', () => folderEl.removeClass('is-hover'));
 
 			// 点击进入文件夹
 			folderEl.onclick = () => {

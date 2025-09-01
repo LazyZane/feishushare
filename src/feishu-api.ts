@@ -2812,7 +2812,7 @@ export class FeishuApiService {
 	 */
 	private async addCalloutContentSimple(documentId: string, calloutBlockId: string, calloutInfo: CalloutInfo): Promise<void> {
 		try {
-			// 创建标题文本块
+			// 创建标题文本块（加粗）
 			const titleRequestData = {
 				index: 0,
 				children: [{
@@ -2901,19 +2901,29 @@ export class FeishuApiService {
 		const elements: any[] = [];
 
 		// 简单的 Markdown 解析器
-		// 支持：**粗体**、*斜体*、`代码`、~~删除线~~
+		// 支持：**粗体**、*斜体*、`代码`、~~删除线~~、==高亮==（按粗体处理）
 
 		let currentIndex = 0;
 		const text = markdown;
 
 		while (currentIndex < text.length) {
 			// 查找下一个格式标记
+			const highlightMatch = text.substring(currentIndex).match(/^==(.+?)==/);
 			const boldMatch = text.substring(currentIndex).match(/^\*\*(.*?)\*\*/);
 			const italicMatch = text.substring(currentIndex).match(/^\*(.*?)\*/);
 			const codeMatch = text.substring(currentIndex).match(/^`(.*?)`/);
 			const strikeMatch = text.substring(currentIndex).match(/^~~(.*?)~~/);
 
-			if (boldMatch) {
+			if (highlightMatch) {
+				// ==高亮== 作为粗体处理
+				elements.push({
+					text_run: {
+						content: highlightMatch[1],
+						text_element_style: { bold: true }
+					}
+				});
+				currentIndex += highlightMatch[0].length;
+			} else if (boldMatch) {
 				// 粗体
 				elements.push({
 					text_run: {
@@ -2960,12 +2970,13 @@ export class FeishuApiService {
 			} else {
 				// 普通文本，查找到下一个格式标记或字符串结尾
 				let nextFormatIndex = text.length;
+				const nextHighlight = text.indexOf('==', currentIndex);
 				const nextBold = text.indexOf('**', currentIndex);
 				const nextItalic = text.indexOf('*', currentIndex);
 				const nextCode = text.indexOf('`', currentIndex);
 				const nextStrike = text.indexOf('~~', currentIndex);
 
-				[nextBold, nextItalic, nextCode, nextStrike].forEach(index => {
+				[nextHighlight, nextBold, nextItalic, nextCode, nextStrike].forEach(index => {
 					if (index !== -1 && index < nextFormatIndex) {
 						nextFormatIndex = index;
 					}
@@ -2990,7 +3001,7 @@ export class FeishuApiService {
 	 * 在 Callout 块内添加标题和内容（带重试机制）
 	 */
 	private async addCalloutContent(documentId: string, calloutBlockId: string, calloutInfo: CalloutInfo): Promise<void> {
-		// 创建标题文本块
+		// 创建标题文本块（加粗）
 		await this.addCalloutContentWithRetry(documentId, calloutBlockId, {
 			index: 0,
 			children: [{
@@ -4075,14 +4086,33 @@ export class FeishuApiService {
 
 			// 第二步：处理 Callout 块（优先处理，因为不需要文件上传）
 			if (calloutPlaceholderBlocks.length > 0) {
+				// 为了防止插入时索引位移导致的顺序错乱：
+				// 1) 先按父块分组并在每个父块内按 index 升序处理
+				// 2) 针对同一父块，记录已插入数量，对后续插入做动态偏移
+				const groupedByParent = new Map<string, typeof calloutPlaceholderBlocks>();
+				for (const block of calloutPlaceholderBlocks) {
+					const list = groupedByParent.get(block.parentId) || [];
+					list.push(block);
+					groupedByParent.set(block.parentId, list);
+				}
+
+				// 汇总排序后的队列（保持跨父块的稳定顺序：按 parentId 分组后依次处理，每组内按 index 升序）
+				const sortedCalloutBlocks: typeof calloutPlaceholderBlocks = [];
+				for (const [, list] of groupedByParent) {
+					list.sort((a, b) => a.index - b.index);
+					sortedCalloutBlocks.push(...list);
+				}
+
+				// 记录每个父块已插入的数量
+				const insertedCountByParent = new Map<string, number>();
 				if (statusNotice) {
 					statusNotice.setMessage(`🎨 正在创建 ${calloutPlaceholderBlocks.length} 个高亮块...`);
 				}
 
 				const processedCalloutBlocks: PlaceholderBlock[] = [];
 
-				for (let i = 0; i < calloutPlaceholderBlocks.length; i++) {
-					const placeholderBlock = calloutPlaceholderBlocks[i];
+				for (let i = 0; i < sortedCalloutBlocks.length; i++) {
+					const placeholderBlock = sortedCalloutBlocks[i];
 					try {
 						// 在每个 Callout 块创建之间添加延迟避免频率限制
 						if (i > 0) {
@@ -4091,8 +4121,16 @@ export class FeishuApiService {
 							await new Promise(resolve => setTimeout(resolve, delay));
 						}
 
-						await this.insertCalloutBlock(documentId, placeholderBlock);
+						// 动态调整插入索引：同一父块内，后续插入需要加上已插入数量的偏移
+						const alreadyInserted = insertedCountByParent.get(placeholderBlock.parentId) || 0;
+						const adjustedPlaceholderBlock: PlaceholderBlock = {
+							...placeholderBlock,
+							index: placeholderBlock.index + alreadyInserted
+						};
+
+						await this.insertCalloutBlock(documentId, adjustedPlaceholderBlock);
 						processedCalloutBlocks.push(placeholderBlock);
+						insertedCountByParent.set(placeholderBlock.parentId, alreadyInserted + 1);
 						Debug.log(`✅ Successfully created Callout block: ${placeholderBlock.calloutInfo?.type}`);
 					} catch (error) {
 						Debug.error(`❌ Failed to create Callout block:`, error);
@@ -4395,7 +4433,8 @@ export class FeishuApiService {
 					false, // 子文档中禁用子文档上传，避免无限递归
 					this.settings.enableLocalImageUpload,
 					this.settings.enableLocalAttachmentUpload,
-					this.settings.titleSource
+					this.settings.titleSource,
+					this.settings.codeBlockFilterLanguages || []
 				);
 
 				// 根据设置提取子文档标题
@@ -4526,6 +4565,30 @@ export class FeishuApiService {
 					continue;
 				}
 
+				// 目标为知识库时，确保子文档也移动到知识库对应路径（未配置节点则根目录）
+				try {
+					if (this.settings.targetType === 'wiki' && this.settings.defaultWikiSpaceId) {
+						// 获取子文档 token（新建为 subDocResult.documentToken；复用URL时从URL提取）
+						let subDocToken = subDocResult.documentToken;
+						if (!subDocToken && subDocResult.url) {
+							subDocToken = this.extractDocumentIdFromUrl(subDocResult.url) || undefined;
+						}
+						if (subDocToken) {
+							const targetNode = this.settings.defaultWikiNodeToken || undefined;
+							Debug.log(`📚 Moving sub-document to wiki: space=${this.settings.defaultWikiSpaceId}, node=${targetNode || 'root'}`);
+							await this.moveDocToWiki(
+								this.settings.defaultWikiSpaceId,
+								subDocToken,
+								'docx',
+								targetNode
+							);
+						}
+					}
+				} catch (moveError) {
+					Debug.warn(`⚠️ Failed to move sub-document to wiki: ${subDoc.fileName}`, moveError);
+					// 移动失败不影响主流程
+				}
+
 				// 只有在创建新文档时才处理本地文件（复用URL时不需要处理）
 				if (!existingUrl || urlChanged) {
 					// 处理子文档内部的本地文件（图片、附件等）
@@ -4541,6 +4604,22 @@ export class FeishuApiService {
 					}
 				} else {
 					Debug.log(`📋 Skipping file processing for sub-document with existing URL: ${subDoc.fileName}`);
+				}
+
+				// 无论新建还是复用URL，都需要处理子文档内的 Callout 占位符替换
+				try {
+					const targetDocToken = subDocResult.documentToken || (subDocResult.url ? this.extractDocumentIdFromUrl(subDocResult.url) || undefined : undefined);
+					if (targetDocToken && processResult.calloutBlocks && processResult.calloutBlocks.length > 0) {
+						Debug.log(`🎨 Processing ${processResult.calloutBlocks.length} callouts in sub-document: ${subDoc.fileName}`);
+						await this.processAllPlaceholders(
+							targetDocToken,
+							[], // 子文档文件已在上面处理，这里仅处理 callout
+							processResult.calloutBlocks,
+							statusNotice
+						);
+					}
+				} catch (calloutError) {
+					Debug.warn(`⚠️ Failed to process callouts in sub-document ${subDoc.fileName}:`, calloutError);
 				}
 
 				// 在父文档中插入子文档链接
@@ -5656,8 +5735,8 @@ export class FeishuApiService {
 				// 不抛出错误，因为内容复制已经成功，图片处理失败不应该影响整体流程
 			}
 
-			// 处理占位符（文件和 Callout 块）
-			const hasLocalFiles = localFiles && localFiles.length > 0;
+			// 处理占位符（仅 Callout 块；文件在后续独立流程处理，避免重复）
+			const hasLocalFiles = false;
 			const hasCalloutBlocks = calloutBlocks && calloutBlocks.length > 0;
 
 			if (hasLocalFiles || hasCalloutBlocks) {
@@ -5666,7 +5745,7 @@ export class FeishuApiService {
 				try {
 					await this.processAllPlaceholders(
 						targetDocumentId,
-						localFiles || [],
+						[],
 						calloutBlocks
 					);
 					Debug.log(`✅ Successfully processed all placeholders`);
@@ -6544,7 +6623,7 @@ export class FeishuApiService {
 			const copyResult = await this.copyContentToDocument(
 				tempDocumentId,
 				documentId,
-				processResult.localFiles,
+				[],
 				processResult.calloutBlocks
 			);
 
