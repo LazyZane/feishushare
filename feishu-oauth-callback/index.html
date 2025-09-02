@@ -1,0 +1,1214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>飞书分享 (Feishu Share) - 将 Obsidian Markdown 一键无损分享到飞书云文档</title>
+    <meta name="description" content="飞书分享插件让您轻松将 Obsidian Markdown 文档一键无损分享到飞书云文档。支持完整格式转换、文件上传、图片处理。Obsidian、飞书文档、Markdown分享、微信社群、插件开发、AI编程。">
+    <meta name="keywords" content="Obsidian,飞书文档,Markdown分享,微信社群,插件开发,AI编程,知识库">
+    <style>
+        /* 重置样式 */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        /* 基础设计系统 */
+        :root {
+            --color-black: #000000;
+            --color-white: #ffffff;
+            --color-gray-100: #f5f5f5;
+            --color-gray-200: #e5e5e5;
+            --color-gray-300: #d4d4d4;
+            --color-gray-700: #404040;
+            --color-gray-800: #262626;
+            --color-gray-900: #171717;
+            --color-accent: #22C55E;
+            --color-accent-hover: #16A34A;
+            --font-primary: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            --grid-unit: 8px;
+            --border-radius: 2px;
+            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+            --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+        }
+
+        /* 全局样式 */
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: var(--font-primary);
+            background: var(--color-black);
+            color: var(--color-white);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* 网格布局容器 */
+        .grid-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 0 calc(var(--grid-unit) * 3);
+            position: relative;
+        }
+
+        /* 导航栏 */
+        .nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0, 0, 0, 0.95);
+            backdrop-filter: blur(10px);
+            border-bottom: 1px solid var(--color-gray-800);
+            z-index: 1000;
+            padding: calc(var(--grid-unit) * 2) 0;
+        }
+
+        .nav-content {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .nav-logo {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--color-white);
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            gap: calc(var(--grid-unit) * 1);
+        }
+
+        .nav-links {
+            display: flex;
+            gap: calc(var(--grid-unit) * 4);
+            list-style: none;
+        }
+
+        .nav-links a {
+            color: var(--color-gray-300);
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: color 0.2s ease;
+        }
+
+        .nav-links a:hover {
+            color: var(--color-white);
+        }
+
+        .nav-cta {
+            background: var(--color-accent);
+            color: var(--color-white);
+            padding: calc(var(--grid-unit) * 1) calc(var(--grid-unit) * 2);
+            border: none;
+            border-radius: var(--border-radius);
+            font-size: 0.9rem;
+            font-weight: 500;
+            text-decoration: none;
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+
+        .nav-cta:hover {
+            background: var(--color-accent-hover);
+            transform: translateY(-1px);
+        }
+
+        /* 首屏区域 */
+        .hero {
+            padding: calc(var(--grid-unit) * 20) 0 calc(var(--grid-unit) * 15) 0;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: 
+                linear-gradient(45deg, transparent 49%, var(--color-gray-900) 49.5%, var(--color-gray-900) 50.5%, transparent 51%),
+                linear-gradient(-45deg, transparent 49%, var(--color-gray-900) 49.5%, var(--color-gray-900) 50.5%, transparent 51%);
+            background-size: 60px 60px;
+            opacity: 0.03;
+            z-index: -1;
+        }
+
+        .hero-content {
+            text-align: center;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .hero-title {
+            font-size: 3.5rem;
+            font-weight: 800;
+            line-height: 1.1;
+            margin-bottom: calc(var(--grid-unit) * 3);
+            letter-spacing: -0.02em;
+        }
+
+        .hero-title span {
+            color: var(--color-accent);
+        }
+
+        .hero-subtitle {
+            font-size: 1.25rem;
+            color: var(--color-gray-300);
+            margin-bottom: calc(var(--grid-unit) * 6);
+            font-weight: 400;
+        }
+
+        .hero-cta {
+            display: inline-flex;
+            align-items: center;
+            gap: calc(var(--grid-unit) * 1);
+            background: var(--color-accent);
+            color: var(--color-white);
+            padding: calc(var(--grid-unit) * 2) calc(var(--grid-unit) * 4);
+            border: none;
+            border-radius: var(--border-radius);
+            font-size: 1.1rem;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            box-shadow: var(--shadow-lg);
+        }
+
+        .hero-cta:hover {
+            background: var(--color-accent-hover);
+            transform: translateY(-2px);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+        }
+
+        .hero-trust {
+            margin-top: calc(var(--grid-unit) * 4);
+            font-size: 0.9rem;
+            color: var(--color-gray-300);
+        }
+
+        /* 几何装饰元素 */
+        .geometric-line {
+            position: absolute;
+            background: var(--color-gray-800);
+            height: 1px;
+        }
+
+        .geometric-line.line-1 {
+            top: 30%;
+            left: 10%;
+            width: 100px;
+        }
+
+        .geometric-line.line-2 {
+            top: 70%;
+            right: 15%;
+            width: 80px;
+        }
+
+        .geometric-circle {
+            position: absolute;
+            border: 1px solid var(--color-gray-800);
+            border-radius: 50%;
+        }
+
+        .geometric-circle.circle-1 {
+            top: 20%;
+            right: 10%;
+            width: 60px;
+            height: 60px;
+        }
+
+        .geometric-circle.circle-2 {
+            bottom: 25%;
+            left: 5%;
+            width: 40px;
+            height: 40px;
+        }
+
+        /* 问题与方案 */
+        .section {
+            padding: calc(var(--grid-unit) * 12) 0;
+            border-bottom: 1px solid var(--color-gray-900);
+        }
+
+        .section-title {
+            font-size: 2.5rem;
+            font-weight: 700;
+            text-align: center;
+            margin-bottom: calc(var(--grid-unit) * 8);
+            letter-spacing: -0.01em;
+        }
+
+        .problem-solution {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: calc(var(--grid-unit) * 8);
+            align-items: center;
+        }
+
+        .problem-content,
+        .solution-content {
+            background: var(--color-gray-900);
+            padding: calc(var(--grid-unit) * 6);
+            border-radius: var(--border-radius);
+            border: 1px solid var(--color-gray-800);
+        }
+
+        .problem-content h3,
+        .solution-content h3 {
+            font-size: 1.5rem;
+            margin-bottom: calc(var(--grid-unit) * 3);
+            color: var(--color-accent);
+        }
+
+        .problem-list {
+            list-style: none;
+            color: var(--color-gray-300);
+        }
+
+        .problem-list li {
+            margin-bottom: calc(var(--grid-unit) * 2);
+            position: relative;
+            padding-left: calc(var(--grid-unit) * 3);
+        }
+
+        .problem-list li::before {
+            content: '✗';
+            position: absolute;
+            left: 0;
+            color: #EF4444;
+        }
+
+        .solution-list {
+            list-style: none;
+            color: var(--color-gray-300);
+        }
+
+        .solution-list li {
+            margin-bottom: calc(var(--grid-unit) * 2);
+            position: relative;
+            padding-left: calc(var(--grid-unit) * 3);
+        }
+
+        .solution-list li::before {
+            content: '✓';
+            position: absolute;
+            left: 0;
+            color: var(--color-accent);
+        }
+
+        /* 功能特性 */
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: calc(var(--grid-unit) * 4);
+        }
+
+        .feature-card {
+            background: var(--color-gray-900);
+            padding: calc(var(--grid-unit) * 6);
+            border-radius: var(--border-radius);
+            border: 1px solid var(--color-gray-800);
+            text-align: center;
+            transition: all 0.2s ease;
+        }
+
+        .feature-card:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-md);
+            border-color: var(--color-accent);
+        }
+
+        .feature-icon {
+            font-size: 2.5rem;
+            margin-bottom: calc(var(--grid-unit) * 3);
+        }
+
+        .feature-card h3 {
+            font-size: 1.25rem;
+            margin-bottom: calc(var(--grid-unit) * 2);
+            color: var(--color-accent);
+        }
+
+        .feature-card p {
+            color: var(--color-gray-300);
+        }
+
+        /* 定价部分 */
+        .pricing-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: calc(var(--grid-unit) * 4);
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        .pricing-card {
+            background: var(--color-gray-900);
+            border: 2px solid var(--color-gray-800);
+            border-radius: calc(var(--border-radius) * 2);
+            padding: calc(var(--grid-unit) * 6);
+            text-align: center;
+            position: relative;
+            transition: all 0.2s ease;
+        }
+
+        .pricing-card:hover {
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .pricing-card.popular {
+            border-color: var(--color-accent);
+            transform: scale(1.05);
+        }
+
+        .pricing-card.popular::before {
+            content: '最受欢迎';
+            position: absolute;
+            top: -12px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: var(--color-accent);
+            color: var(--color-white);
+            padding: calc(var(--grid-unit) * 1) calc(var(--grid-unit) * 2);
+            border-radius: calc(var(--border-radius) * 2);
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+
+        .pricing-card h3 {
+            font-size: 1.5rem;
+            margin-bottom: calc(var(--grid-unit) * 2);
+            color: var(--color-accent);
+        }
+
+        .pricing-price {
+            font-size: 2.5rem;
+            font-weight: 800;
+            margin-bottom: calc(var(--grid-unit) * 1);
+        }
+
+        .pricing-price .currency {
+            font-size: 1.5rem;
+            color: var(--color-gray-300);
+        }
+
+        .pricing-original {
+            text-decoration: line-through;
+            color: var(--color-gray-300);
+            font-size: 1rem;
+            margin-bottom: calc(var(--grid-unit) * 3);
+        }
+
+        .pricing-features {
+            list-style: none;
+            margin-bottom: calc(var(--grid-unit) * 4);
+            text-align: left;
+        }
+
+        .pricing-features li {
+            padding: calc(var(--grid-unit) * 1) 0;
+            color: var(--color-gray-300);
+            position: relative;
+            padding-left: calc(var(--grid-unit) * 3);
+        }
+
+        .pricing-features li::before {
+            content: '✓';
+            position: absolute;
+            left: 0;
+            color: var(--color-accent);
+            font-weight: 600;
+        }
+
+        .pricing-cta {
+            width: 100%;
+            background: var(--color-accent);
+            color: var(--color-white);
+            padding: calc(var(--grid-unit) * 2);
+            border: none;
+            border-radius: var(--border-radius);
+            font-size: 1rem;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            display: block;
+            text-align: center;
+        }
+
+        .pricing-cta:hover {
+            background: var(--color-accent-hover);
+            transform: translateY(-1px);
+        }
+
+        .limited-badge {
+            background: #EF4444;
+            color: var(--color-white);
+            padding: calc(var(--grid-unit) * 1) calc(var(--grid-unit) * 2);
+            border-radius: calc(var(--border-radius) * 2);
+            font-size: 0.8rem;
+            font-weight: 600;
+            position: absolute;
+            top: calc(var(--grid-unit) * 2);
+            right: calc(var(--grid-unit) * 2);
+        }
+
+        /* 常见问题 */
+        .faq-item {
+            border-bottom: 1px solid var(--color-gray-800);
+            margin-bottom: calc(var(--grid-unit) * 2);
+        }
+
+        .faq-question {
+            width: 100%;
+            background: none;
+            border: none;
+            color: var(--color-white);
+            font-size: 1.1rem;
+            font-weight: 600;
+            padding: calc(var(--grid-unit) * 3) 0;
+            text-align: left;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .faq-question::after {
+            content: '+';
+            font-size: 1.5rem;
+            font-weight: 300;
+            transition: transform 0.2s ease;
+        }
+
+        .faq-question.active::after {
+            transform: rotate(45deg);
+        }
+
+        .faq-answer {
+            padding: 0 0 calc(var(--grid-unit) * 3) 0;
+            color: var(--color-gray-300);
+            display: none;
+        }
+
+        .faq-answer.active {
+            display: block;
+        }
+
+        /* 联系信息 */
+        .contact {
+            background: var(--color-gray-900);
+            text-align: center;
+        }
+
+        .contact-content {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .contact h2 {
+            margin-bottom: calc(var(--grid-unit) * 4);
+        }
+
+        .contact-info {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: calc(var(--grid-unit) * 3);
+            margin-bottom: calc(var(--grid-unit) * 4);
+        }
+
+        .wechat-info {
+            background: var(--color-black);
+            padding: calc(var(--grid-unit) * 4);
+            border-radius: var(--border-radius);
+            border: 1px solid var(--color-gray-800);
+        }
+
+        .wechat-id {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--color-accent);
+            margin-bottom: calc(var(--grid-unit) * 2);
+        }
+
+        .qr-preview {
+            max-width: 200px;
+            border-radius: var(--border-radius);
+            cursor: pointer;
+            transition: transform 0.2s ease;
+        }
+
+        .qr-preview:hover {
+            transform: scale(1.05);
+        }
+
+        /* 页脚 */
+        .footer {
+            padding: calc(var(--grid-unit) * 8) 0;
+            border-top: 1px solid var(--color-gray-800);
+            background: var(--color-gray-900);
+        }
+
+        .footer-content {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: calc(var(--grid-unit) * 6);
+            margin-bottom: calc(var(--grid-unit) * 6);
+        }
+
+        .footer-section h4 {
+            color: var(--color-accent);
+            margin-bottom: calc(var(--grid-unit) * 2);
+            font-size: 1.1rem;
+        }
+
+        .footer-section p,
+        .footer-section a {
+            color: var(--color-gray-300);
+            text-decoration: none;
+            margin-bottom: calc(var(--grid-unit) * 1);
+            display: block;
+        }
+
+        .footer-section a:hover {
+            color: var(--color-white);
+        }
+
+        .footer-bottom {
+            text-align: center;
+            padding-top: calc(var(--grid-unit) * 4);
+            border-top: 1px solid var(--color-gray-800);
+            color: var(--color-gray-300);
+        }
+
+        .footer-cta {
+            background: var(--color-accent);
+            color: var(--color-white);
+            padding: calc(var(--grid-unit) * 3) calc(var(--grid-unit) * 6);
+            border: none;
+            border-radius: var(--border-radius);
+            font-size: 1.1rem;
+            font-weight: 600;
+            text-decoration: none;
+            display: inline-block;
+            margin-bottom: calc(var(--grid-unit) * 4);
+            transition: all 0.2s ease;
+        }
+
+        .footer-cta:hover {
+            background: var(--color-accent-hover);
+            transform: translateY(-2px);
+        }
+
+        /* 模态框 */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 2000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--color-gray-900);
+            padding: calc(var(--grid-unit) * 6);
+            border-radius: calc(var(--border-radius) * 2);
+            border: 1px solid var(--color-gray-800);
+            max-width: 500px;
+            width: 90%;
+            text-align: center;
+            position: relative;
+        }
+
+        .modal-close {
+            position: absolute;
+            top: calc(var(--grid-unit) * 2);
+            right: calc(var(--grid-unit) * 2);
+            background: none;
+            border: none;
+            color: var(--color-gray-300);
+            font-size: 1.5rem;
+            cursor: pointer;
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-close:hover {
+            color: var(--color-white);
+        }
+
+        .modal-qr {
+            max-width: 300px;
+            margin: calc(var(--grid-unit) * 2) 0;
+            border-radius: var(--border-radius);
+        }
+
+        .modal h3 {
+            color: var(--color-accent);
+            margin-bottom: calc(var(--grid-unit) * 2);
+        }
+
+        .modal p {
+            color: var(--color-gray-300);
+            margin-bottom: calc(var(--grid-unit) * 2);
+        }
+
+        /* 响应式设计 */
+        @media (max-width: 768px) {
+            .nav-links {
+                display: none;
+            }
+
+            .hero-title {
+                font-size: 2.5rem;
+            }
+
+            .hero-subtitle {
+                font-size: 1.1rem;
+            }
+
+            .section-title {
+                font-size: 2rem;
+            }
+
+            .problem-solution {
+                grid-template-columns: 1fr;
+                gap: calc(var(--grid-unit) * 4);
+            }
+
+            .features {
+                grid-template-columns: 1fr;
+            }
+
+            .pricing-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .pricing-card.popular {
+                transform: none;
+            }
+
+            .footer-content {
+                grid-template-columns: 1fr;
+                text-align: center;
+            }
+
+            .geometric-line,
+            .geometric-circle {
+                display: none;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .grid-container {
+                padding: 0 calc(var(--grid-unit) * 2);
+            }
+
+            .hero {
+                padding: calc(var(--grid-unit) * 15) 0 calc(var(--grid-unit) * 10) 0;
+            }
+
+            .hero-title {
+                font-size: 2rem;
+            }
+
+            .section {
+                padding: calc(var(--grid-unit) * 8) 0;
+            }
+
+            .problem-content,
+            .solution-content,
+            .feature-card {
+                padding: calc(var(--grid-unit) * 4);
+            }
+        }
+
+        /* 滚动条样式 */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--color-black);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--color-gray-800);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--color-gray-700);
+        }
+
+        /* 动画 */
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .fade-in-up {
+            animation: fadeInUp 0.8s ease-out;
+        }
+
+        /* 工具类 */
+        .text-center {
+            text-align: center;
+        }
+
+        .text-accent {
+            color: var(--color-accent);
+        }
+
+        .mb-4 {
+            margin-bottom: calc(var(--grid-unit) * 4);
+        }
+    </style>
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="nav">
+        <div class="grid-container">
+            <div class="nav-content">
+                <a href="#hero" class="nav-logo">
+                    📤 飞书分享
+                </a>
+                <ul class="nav-links">
+                    <li><a href="#features">功能特性</a></li>
+                    <li><a href="#pricing">定价</a></li>
+                    <li><a href="#faq">FAQ</a></li>
+                    <li><a href="#contact">联系我们</a></li>
+                </ul>
+                <a href="oauth-callback.html" class="nav-cta">立即体验</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- 首屏区域 -->
+    <section id="hero" class="hero">
+        <div class="grid-container">
+            <div class="hero-content fade-in-up">
+                <h1 class="hero-title">
+                    将 Obsidian Markdown<br>
+                    <span>一键无损分享</span>到飞书云文档
+                </h1>
+                <p class="hero-subtitle">
+                    支持完整格式转换、文件上传、跨文档图片处理、子文档嵌入<br>
+                    让您的知识无缝流转，提升团队协作效率
+                </p>
+                <a href="oauth-callback.html" class="hero-cta">
+                    🚀 立即体验
+                    <span style="font-size: 0.9rem; opacity: 0.9;">(7天无理由退款)</span>
+                </a>
+                <p class="hero-trust">
+                    已被超过 2,000+ Obsidian 用户信赖使用
+                </p>
+            </div>
+        </div>
+        
+        <!-- 几何装饰元素 -->
+        <div class="geometric-line line-1"></div>
+        <div class="geometric-line line-2"></div>
+        <div class="geometric-circle circle-1"></div>
+        <div class="geometric-circle circle-2"></div>
+    </section>
+
+    <!-- 问题与方案 -->
+    <section id="problem-solution" class="section">
+        <div class="grid-container">
+            <h2 class="section-title">为什么选择飞书分享？</h2>
+            <div class="problem-solution">
+                <div class="problem-content">
+                    <h3>🤔 您是否遇到这些问题？</h3>
+                    <ul class="problem-list">
+                        <li>手动复制粘贴 Markdown 内容到飞书，格式丢失严重</li>
+                        <li>图片、附件需要一个个重新上传，费时费力</li>
+                        <li>复杂的表格和代码块在飞书中显示混乱</li>
+                        <li>团队协作需要在多个平台间反复切换</li>
+                        <li>版本更新时需要重复整个分享流程</li>
+                    </ul>
+                </div>
+                <div class="solution-content">
+                    <h3>✨ 飞书分享完美解决</h3>
+                    <ul class="solution-list">
+                        <li>一键分享，完美保持所有 Markdown 格式</li>
+                        <li>自动上传本地文件，智能处理跨文档图片</li>
+                        <li>完整支持 Obsidian 特有语法和 Callout</li>
+                        <li>云空间和知识库双模式，灵活选择</li>
+                        <li>智能增量更新，避免重复工作</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 核心功能 -->
+    <section id="features" class="section">
+        <div class="grid-container">
+            <h2 class="section-title">核心功能特性</h2>
+            <div class="features">
+                <div class="feature-card">
+                    <div class="feature-icon">🚀</div>
+                    <h3>一键分享体验</h3>
+                    <p>支持命令面板、右键菜单、文件管理器多种分享方式，操作简单直观。智能识别已分享文档，支持增量更新。</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🎨</div>
+                    <h3>完整格式兼容</h3>
+                    <p>完美处理标题、列表、表格、代码块、引用等 Markdown 语法，以及 Obsidian 双链、标签、嵌入等特有语法。</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">📎</div>
+                    <h3>智能文件处理</h3>
+                    <p>自动上传图片、文档、表格等附件。跨文档图片智能复制，子文档嵌入支持，批量优化处理性能。</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🔒</div>
+                    <h3>安全可靠授权</h3>
+                    <p>标准 OAuth 2.0 流程，支持自动 Token 刷新。直连飞书 API，无第三方服务器中转，数据安全有保障。</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 定价方案 -->
+    <section id="pricing" class="section">
+        <div class="grid-container">
+            <h2 class="section-title">选择适合您的方案</h2>
+            <div class="pricing-grid">
+                <!-- 基础服务 -->
+                <div class="pricing-card">
+                    <div class="limited-badge">限时优惠</div>
+                    <h3>基础服务</h3>
+                    <div class="pricing-price">
+                        <span class="currency">¥</span>9.9
+                    </div>
+                    <div class="pricing-original">原价 ¥39.9</div>
+                    <ul class="pricing-features">
+                        <li>飞书分享插件买断使用</li>
+                        <li>微信社群售后支持</li>
+                        <li>免费插件更新维护 1 年</li>
+                        <li>群内 Obsidian 使用技巧分享</li>
+                        <li>7 天无理由退款保障</li>
+                    </ul>
+                    <button class="pricing-cta" onclick="openModal('basic-modal')">选择基础服务</button>
+                    <p style="font-size: 0.8rem; color: var(--color-gray-300); margin-top: 8px;">仅限前 30 名用户</p>
+                </div>
+
+                <!-- Pro 服务 -->
+                <div class="pricing-card popular">
+                    <h3>Pro 服务</h3>
+                    <div class="pricing-price">
+                        <span class="currency">¥</span>99.9
+                    </div>
+                    <div class="pricing-original">限时特价</div>
+                    <ul class="pricing-features">
+                        <li>包含所有基础服务内容</li>
+                        <li>插件开发微信社群</li>
+                        <li>小白 AI 编程教程分享</li>
+                        <li>插件开发到上架指导</li>
+                        <li>微信公众号分享插件 Beta 试用</li>
+                        <li>天使用户需求反馈通道</li>
+                        <li>插件上架后永久免费使用</li>
+                        <li>微信排版/图片上传/封面制作</li>
+                    </ul>
+                    <button class="pricing-cta" onclick="openModal('pro-modal')">选择 Pro 服务</button>
+                </div>
+            </div>
+            
+            <div class="text-center" style="margin-top: calc(var(--grid-unit) * 6);">
+                <p style="color: var(--color-gray-300); margin-bottom: calc(var(--grid-unit) * 3);">
+                    需要定制化需求？
+                </p>
+                <button class="pricing-cta" onclick="scrollToContact()" style="background: var(--color-gray-700);">
+                    咨询定制服务
+                </button>
+            </div>
+        </div>
+    </section>
+
+    <!-- FAQ -->
+    <section id="faq" class="section">
+        <div class="grid-container">
+            <h2 class="section-title">常见问题解答</h2>
+            <div class="faq-content">
+                <div class="faq-item">
+                    <button class="faq-question" onclick="toggleFaq(this)">
+                        插件支持哪些文件格式？
+                    </button>
+                    <div class="faq-answer">
+                        <p>支持所有 Markdown 格式，以及图片文件（PNG、JPG、GIF、WebP）、文档文件（PDF、DOCX、XLSX）等。特别支持 Obsidian 的双链、标签、嵌入语法。</p>
+                    </div>
+                </div>
+                <div class="faq-item">
+                    <button class="faq-question" onclick="toggleFaq(this)">
+                        如何处理大文件或大量文件的分享？
+                    </button>
+                    <div class="faq-answer">
+                        <p>插件使用飞书嵌套块 API 进行批量优化，处理速度提升 75%-99%，API 调用减少 90% 以上。单个文件失败不影响整体分享。</p>
+                    </div>
+                </div>
+                <div class="faq-item">
+                    <button class="faq-question" onclick="toggleFaq(this)">
+                        数据安全如何保障？
+                    </button>
+                    <div class="faq-answer">
+                        <p>使用标准 OAuth 2.0 授权流程，直连飞书官方 API，无第三方服务器中转。所有数据传输均采用 HTTPS 加密。</p>
+                    </div>
+                </div>
+                <div class="faq-item">
+                    <button class="faq-question" onclick="toggleFaq(this)">
+                        支持哪些操作系统？
+                    </button>
+                    <div class="faq-answer">
+                        <p>支持 Windows、macOS、Linux 等所有 Obsidian 支持的操作系统。插件基于 TypeScript 开发，跨平台兼容性良好。</p>
+                    </div>
+                </div>
+                <div class="faq-item">
+                    <button class="faq-question" onclick="toggleFaq(this)">
+                        退款政策如何？
+                    </button>
+                    <div class="faq-answer">
+                        <p>提供 7 天无理由退款保障。如果在未提供服务的情况下不满意，可以无条件申请退款。</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 联系信息 -->
+    <section id="contact" class="section contact">
+        <div class="grid-container">
+            <div class="contact-content">
+                <h2>定制化服务与技术支持</h2>
+                <p style="color: var(--color-gray-300); margin-bottom: calc(var(--grid-unit) * 4);">
+                    需要插件定制开发、AI 编程陪跑服务，或有其他技术需求？<br>
+                    联系我们获取专业的技术支持和解决方案。
+                </p>
+                
+                <div class="contact-info">
+                    <div class="wechat-info">
+                        <div class="wechat-id">微信号：zsw719180124</div>
+                        <img src="微信二维码.jpg" alt="微信二维码" class="qr-preview" onclick="openModal('wechat-modal')">
+                        <p style="font-size: 0.9rem; color: var(--color-gray-300); margin-top: calc(var(--grid-unit) * 2);">
+                            点击查看微信二维码
+                        </p>
+                    </div>
+                </div>
+                
+                <p style="color: var(--color-gray-300); font-size: 0.9rem;">
+                    服务内容：插件定制开发、AI 编程指导、Obsidian 工作流优化<br>
+                    响应时间：工作日 24 小时内回复
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <!-- 页脚 -->
+    <footer class="footer">
+        <div class="grid-container">
+            <div class="text-center">
+                <a href="oauth-callback.html" class="footer-cta">
+                    🚀 立即开始使用飞书分享
+                </a>
+            </div>
+            
+            <div class="footer-content">
+                <div class="footer-section">
+                    <h4>产品信息</h4>
+                    <p>飞书分享是一个专业的 Obsidian 插件，帮助用户将 Markdown 文档无缝分享到飞书云文档平台。</p>
+                </div>
+                <div class="footer-section">
+                    <h4>服务支持</h4>
+                    <a href="#faq">常见问题</a>
+                    <a href="#contact">技术支持</a>
+                    <a href="#pricing">购买服务</a>
+                </div>
+                <div class="footer-section">
+                    <h4>联系方式</h4>
+                    <p>微信：zsw719180124</p>
+                    <a href="https://ai.xinqi.life/about" target="_blank">作者简介</a>
+                </div>
+                <div class="footer-section">
+                    <h4>技术栈</h4>
+                    <p>TypeScript / Obsidian API</p>
+                    <p>飞书开放平台 API</p>
+                    <p>OAuth 2.0 安全认证</p>
+                </div>
+            </div>
+            
+            <div class="footer-bottom">
+                <p>&copy; 2025 飞书分享 (Feishu Share). 基于 MIT 许可证开源.</p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- 模态框 -->
+    <!-- 基础服务模态框 -->
+    <div id="basic-modal" class="modal">
+        <div class="modal-content">
+            <button class="modal-close" onclick="closeModal('basic-modal')">&times;</button>
+            <h3>基础服务 - 限时 ¥9.9</h3>
+            <p>扫描下方二维码完成支付</p>
+            <img src="飞书插件基础服务.jpg" alt="基础服务收款码" class="modal-qr">
+            <p style="font-size: 0.9rem;">
+                支付后请添加微信：zsw719180124<br>
+                发送支付截图即可加入服务群
+            </p>
+        </div>
+    </div>
+
+    <!-- Pro 服务模态框 -->
+    <div id="pro-modal" class="modal">
+        <div class="modal-content">
+            <button class="modal-close" onclick="closeModal('pro-modal')">&times;</button>
+            <h3>Pro 服务 - ¥99.9</h3>
+            <p>扫描下方二维码完成支付</p>
+            <img src="obsidian插件pro社群.png" alt="Pro服务收款码" class="modal-qr">
+            <p style="font-size: 0.9rem;">
+                支付后请添加微信：zsw719180124<br>
+                发送支付截图即可加入 Pro 服务群
+            </p>
+        </div>
+    </div>
+
+    <!-- 微信二维码模态框 -->
+    <div id="wechat-modal" class="modal">
+        <div class="modal-content">
+            <button class="modal-close" onclick="closeModal('wechat-modal')">&times;</button>
+            <h3>添加微信联系</h3>
+            <p>微信号：zsw719180124</p>
+            <img src="微信二维码.jpg" alt="微信二维码" class="modal-qr">
+            <p style="font-size: 0.9rem;">
+                扫描二维码或搜索微信号添加好友<br>
+                获取定制化服务与技术支持
+            </p>
+        </div>
+    </div>
+
+    <script>
+        // FAQ 交互
+        function toggleFaq(button) {
+            const answer = button.nextElementSibling;
+            const isActive = button.classList.contains('active');
+            
+            // 关闭所有其他FAQ
+            document.querySelectorAll('.faq-question').forEach(q => {
+                q.classList.remove('active');
+                q.nextElementSibling.classList.remove('active');
+            });
+            
+            // 如果当前不是激活状态，则激活
+            if (!isActive) {
+                button.classList.add('active');
+                answer.classList.add('active');
+            }
+        }
+
+        // 模态框控制
+        function openModal(modalId) {
+            document.getElementById(modalId).classList.add('active');
+            document.body.style.overflow = 'hidden';
+        }
+
+        function closeModal(modalId) {
+            document.getElementById(modalId).classList.remove('active');
+            document.body.style.overflow = 'auto';
+        }
+
+        // 点击模态框外部关闭
+        document.querySelectorAll('.modal').forEach(modal => {
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    closeModal(modal.id);
+                }
+            });
+        });
+
+        // ESC键关闭模态框
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                document.querySelectorAll('.modal.active').forEach(modal => {
+                    closeModal(modal.id);
+                });
+            }
+        });
+
+        // 滚动到联系区域
+        function scrollToContact() {
+            document.getElementById('contact').scrollIntoView({
+                behavior: 'smooth'
+            });
+        }
+
+        // 平滑滚动导航
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start'
+                    });
+                }
+            });
+        });
+
+        // 滚动效果
+        window.addEventListener('scroll', () => {
+            const nav = document.querySelector('.nav');
+            if (window.scrollY > 100) {
+                nav.style.background = 'rgba(0, 0, 0, 0.98)';
+            } else {
+                nav.style.background = 'rgba(0, 0, 0, 0.95)';
+            }
+        });
+
+        // 页面加载动画
+        document.addEventListener('DOMContentLoaded', () => {
+            const observer = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        entry.target.classList.add('fade-in-up');
+                    }
+                });
+            }, { threshold: 0.1 });
+
+            document.querySelectorAll('.section').forEach(section => {
+                observer.observe(section);
+            });
+        });
+    </script>
+</body>
+</html>

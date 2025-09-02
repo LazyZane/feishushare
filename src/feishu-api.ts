@@ -5972,7 +5972,8 @@ export class FeishuApiService {
 			// 尝试从错误中提取响应信息
 			if (error && typeof error === 'object' && 'response' in error) {
 				try {
-					const response = (error as any).response;
+					type ErrorWithResponse = { response?: { status?: number; text?: string } };
+					const response = (error as ErrorWithResponse).response;
 					Debug.error('❌ Error response status:', response?.status);
 					Debug.error('❌ Error response text:', response?.text);
 				} catch (parseError) {
