@@ -244,21 +244,8 @@ export class MarkdownProcessor {
 
 
 	/**
-	 * 处理数学公式
+	 * 处理 Obsidian 的高亮语法
 	 */
-	private processMathFormulas(content: string): string {
-		// 处理行内数学公式 $formula$
-		content = content.replace(/\$([^$]+)\$/g, (match, formula) => {
-			return `📐 数学公式: ${formula}`;
-		});
-
-		// 处理块级数学公式 $$formula$$
-		content = content.replace(/\$\$([^$]+)\$\$/g, (match, formula) => {
-			return `\n📐 数学公式块:\n${formula}\n`;
-		});
-
-		return content;
-	}
 
 	/**
 	 * 处理 Obsidian 的高亮语法
@@ -408,7 +395,6 @@ export class MarkdownProcessor {
 		processedContent = this.processLinks(processedContent); // 处理普通链接
 		processedContent = this.processTags(processedContent);
 		processedContent = this.processHighlights(processedContent);
-		processedContent = this.processMathFormulas(processedContent);
 		processedContent = this.processCodeBlocks(processedContent);
 		processedContent = this.cleanupWhitespace(processedContent);
 
@@ -644,7 +630,6 @@ export class MarkdownProcessor {
 		processedContent = this.processLinks(processedContent); // 处理普通链接，确保特殊协议链接保持可点击
 		processedContent = this.processTags(processedContent);
 		processedContent = this.processHighlights(processedContent);
-		processedContent = this.processMathFormulas(processedContent);
 		processedContent = this.cleanupWhitespace(processedContent);
 
 		return processedContent;
