@@ -1,0 +1,16 @@
+{
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/feishu-oauth-callback/index.html"
+    },
+    {
+      "source": "/oauth-callback",
+      "destination": "/feishu-oauth-callback/oauth-callback.html"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/feishu-oauth-callback/$1"
+    }
+  ]
+}
