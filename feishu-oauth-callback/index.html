@@ -1,702 +1,533 @@
-
-
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>飞书分享 - 终结笔记分享的痛苦 | Obsidian插件</title>
+    <title>飞书分享 - 终结笔记分享的痛苦 | VibeCoder Nexus Style</title>
     <meta name="description" content="你的完美笔记，一秒飞向团队。不再为格式丢失而抓狂，不再为分享流程而浪费时间。">
-    <meta name="keywords" content="Obsidian,飞书,插件,Markdown,云文档,分享,笔记,效率,团队协作">
 
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
+
     <!-- Font Awesome -->
-    <link rel="stylesheet" href="https://cdn.staticfile.org/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
     <script>
         tailwind.config = {
+            darkMode: 'class',
             theme: {
                 extend: {
-                    fontFamily: {
-                        'sans': ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
-                    },
                     colors: {
-                        'obsidian': '#1e1e1e',
-                        'feishu': '#00d4aa',
+                        background: 'var(--background)',
+                        foreground: 'var(--foreground)',
+                        primary: 'var(--primary)',
+                        'primary-foreground': 'var(--primary-foreground)',
+                        muted: 'var(--muted)',
+                        'muted-foreground': 'var(--muted-foreground)',
+                        card: 'var(--card)',
+                        'card-foreground': 'var(--card-foreground)',
+                        border: 'var(--border)',
+                    },
+                    fontFamily: {
+                        sans: ['"Geist Sans"', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'],
+                        mono: ['"Geist Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
+                    },
+                    animation: {
+                        'float': 'float 6s ease-in-out infinite',
+                        'pulse-slow': 'pulse 4s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                    },
+                    keyframes: {
+                        float: {
+                            '0%, 100%': { transform: 'translateY(0)' },
+                            '50%': { transform: 'translateY(-20px)' },
+                        }
                     }
                 }
             }
         }
     </script>
-    
+
     <style>
-        /* 重新定义视觉语言 */
-        .hero-gradient {
-            background: linear-gradient(135deg, #1e1e1e 0%, #2d2d2d 50%, #00d4aa 100%);
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+        /* CSS Variables for Theme - Matching VibeCoder Nexus */
+        :root {
+            --background: #ffffff;
+            --foreground: #0a0a0a;
+            --primary: #0071E3; /* Apple Blue */
+            --primary-foreground: #ffffff;
+            --muted: #f5f5f5;
+            --muted-foreground: #737373;
+            --card: #ffffff;
+            --card-foreground: #0a0a0a;
+            --border: #e5e5e5;
+            --radius: 0.5rem;
         }
 
-        .pain-point-card {
-            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-            border-left: 4px solid transparent;
+        .dark {
+            --background: #050505; /* The Singularity Black */
+            --foreground: #ededed;
+            --primary: #0071E3;
+            --primary-foreground: #ffffff;
+            --muted: #171717;
+            --muted-foreground: #a3a3a3;
+            --card: #0a0a0a;
+            --card-foreground: #ededed;
+            --border: #262626;
         }
 
-        .pain-point-card:hover {
-            border-left-color: #ef4444;
-            transform: translateX(8px);
-            background: linear-gradient(135deg, #fef2f2 0%, #ffffff 100%);
+        body {
+            background-color: var(--background);
+            color: var(--foreground);
+            font-family: "Geist Sans", "Inter", sans-serif;
+            transition: background-color 0.3s ease, color 0.3s ease;
+            -webkit-font-smoothing: antialiased;
         }
 
-        .solution-card {
-            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-            border-left: 4px solid transparent;
+        /* Utility Classes */
+        .glass-panel {
+            background: rgba(var(--card), 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--border);
         }
 
-        .solution-card:hover {
-            border-left-color: #00d4aa;
-            transform: translateX(8px);
-            background: linear-gradient(135deg, #f0fdfa 0%, #ffffff 100%);
+        .text-gradient {
+            background: linear-gradient(to right, #0071E3, #FF6B35);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
         }
 
-        .before-after {
-            position: relative;
-            overflow: hidden;
-        }
-
-        .before-after::before {
-            content: '';
+        .aurora-blob {
             position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: linear-gradient(45deg, transparent 49%, #ef4444 49%, #ef4444 51%, transparent 51%);
-            opacity: 0;
-            transition: opacity 0.3s ease;
+            border-radius: 50%;
+            filter: blur(80px);
+            opacity: 0.4;
+            z-index: -1;
+            animation: float 10s infinite;
         }
 
-        .before-after:hover::before {
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--background);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--muted-foreground);
+        }
+
+        .grid-bg {
+            background-image: linear-gradient(to right, var(--border) 1px, transparent 1px),
+                              linear-gradient(to bottom, var(--border) 1px, transparent 1px);
+            background-size: 24px 24px;
+            mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+            -webkit-mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
             opacity: 0.1;
         }
-
-        .obsidian-dark {
-            background: #1e1e1e;
-            color: #dcddde;
-            font-family: 'JetBrains Mono', 'Fira Code', monospace;
-        }
-
-        .feishu-clean {
-            background: #ffffff;
-            border: 1px solid #e5e7eb;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }
-
-        .micro-interaction {
-            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-
-        .micro-interaction:hover {
-            transform: scale(1.02);
-        }
-
-        .fade-in {
-            opacity: 0;
-            transform: translateY(24px);
-            transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-
-        .fade-in.visible {
-            opacity: 1;
-            transform: translateY(0);
-        }
-
-        /* 情感化设计 */
-        .frustration-red { color: #ef4444; }
-        .relief-green { color: #00d4aa; }
-        .obsidian-purple { color: #7c3aed; }
-
-        /* 微妙的视觉层次 */
-        .text-hierarchy-1 { font-size: 3.5rem; font-weight: 800; line-height: 1.1; }
-        .text-hierarchy-2 { font-size: 2rem; font-weight: 700; line-height: 1.2; }
-        .text-hierarchy-3 { font-size: 1.25rem; font-weight: 600; line-height: 1.4; }
-        .text-hierarchy-4 { font-size: 1rem; font-weight: 400; line-height: 1.6; }
-
-        /* 呼吸感的间距 */
-        .breathing-space { margin: 4rem 0; }
-        .tight-space { margin: 1.5rem 0; }
     </style>
 </head>
-<body class="bg-gray-50">
-    <!-- Minimal Header -->
-    <header class="bg-white/95 backdrop-blur-sm border-b border-gray-100 sticky top-0 z-50">
-        <nav class="container mx-auto px-6 py-4">
-            <div class="flex items-center justify-between">
-                <div class="flex items-center space-x-3">
-                    <div class="w-8 h-8 bg-obsidian rounded-lg flex items-center justify-center">
-                        <i class="fas fa-share-alt text-feishu text-sm"></i>
-                    </div>
-                    <span class="text-lg font-semibold text-gray-900">飞书分享</span>
+<body class="relative min-h-screen selection:bg-primary/20 selection:text-primary">
+
+    <!-- Grid Background -->
+    <div class="fixed inset-0 grid-bg pointer-events-none z-0"></div>
+
+    <!-- Aurora Background Effects (Visible in Dark Mode) -->
+    <div class="fixed top-0 left-0 w-full h-full overflow-hidden pointer-events-none z-0 opacity-0 dark:opacity-100 transition-opacity duration-700">
+        <div class="aurora-blob bg-blue-600/30 w-96 h-96 top-0 -left-20"></div>
+        <div class="aurora-blob bg-purple-600/30 w-80 h-80 bottom-0 right-0 animation-delay-2000"></div>
+        <div class="aurora-blob bg-orange-500/20 w-64 h-64 top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 animation-delay-4000"></div>
+    </div>
+
+    <!-- Navbar -->
+    <header class="fixed top-0 left-0 right-0 z-50 border-b border-border/40 bg-background/80 backdrop-blur-md">
+        <nav class="container mx-auto px-6 h-16 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center border border-primary/20">
+                    <i class="fas fa-share-alt text-primary text-sm"></i>
                 </div>
-                <div class="hidden md:flex space-x-8">
-                    <a href="#pain" class="text-gray-600 hover:text-gray-900 transition text-sm font-medium">痛点</a>
-                    <a href="#solution" class="text-gray-600 hover:text-gray-900 transition text-sm font-medium">解决方案</a>
-                    <a href="#install" class="bg-obsidian text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-800 transition">安装</a>
-                </div>
+                <span class="text-lg font-bold tracking-tight">Feishu Share</span>
             </div>
+
+            <div class="hidden md:flex items-center space-x-8">
+                <a href="#pain" class="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">痛点</a>
+                <a href="#solution" class="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">解决方案</a>
+                <a href="#tech" class="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">技术实现</a>
+                <button id="theme-toggle" class="p-2 rounded-full hover:bg-muted transition-colors text-muted-foreground">
+                    <i class="fas fa-sun block dark:hidden"></i>
+                    <i class="fas fa-moon hidden dark:block"></i>
+                </button>
+                <a href="#install" class="bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary/90 transition shadow-lg shadow-primary/20">
+                    安装
+                </a>
+            </div>
+
+            <!-- Mobile Menu Button -->
+            <button class="md:hidden p-2 text-muted-foreground">
+                <i class="fas fa-bars"></i>
+            </button>
         </nav>
     </header>
 
-    <!-- Hero: 直击痛点 -->
-    <section class="hero-gradient text-white py-24 relative overflow-hidden">
-        <div class="absolute inset-0 bg-black/20"></div>
-        <div class="container mx-auto px-6 relative z-10">
-            <div class="max-w-5xl mx-auto text-center">
-                <div class="mb-8">
-                    <span class="inline-block bg-red-500/20 text-red-200 px-4 py-2 rounded-full text-sm font-medium mb-6">
-                        <i class="fas fa-exclamation-triangle mr-2"></i>你是否也有这些痛苦？
+    <main class="relative z-10 pt-32 pb-20">
+        <!-- Hero Section -->
+        <section class="container mx-auto px-6 mb-32">
+            <div class="max-w-4xl mx-auto text-center">
+                <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-primary/10 text-primary text-xs font-medium mb-8 border border-primary/20">
+                    <span class="relative flex h-2 w-2">
+                      <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
+                      <span class="relative inline-flex rounded-full h-2 w-2 bg-primary"></span>
                     </span>
+                    解决 Obsidian 到飞书的最后一步
                 </div>
 
-                <h1 class="text-hierarchy-1 mb-8 leading-tight">
-                    <span class="block text-gray-300">在 Obsidian 里写了</span>
-                    <span class="block obsidian-purple">完美的笔记</span>
-                    <span class="block text-gray-300">但分享时</span>
-                    <span class="block frustration-red">格式全乱了？</span>
+                <h1 class="text-5xl md:text-7xl font-bold tracking-tight mb-8 leading-tight">
+                    在 Obsidian 写了完美的笔记<br>
+                    <span class="text-gradient">但分享时格式全乱了？</span>
                 </h1>
 
-                <p class="text-hierarchy-3 mb-12 text-gray-300 max-w-3xl mx-auto">
-                    每次分享都要经历：复制→粘贴→格式丢失→重新整理→再上传<br>
-                    <span class="relief-green font-semibold">现在，一键解决所有问题</span>
+                <p class="text-xl text-muted-foreground mb-12 max-w-2xl mx-auto leading-relaxed">
+                    每次分享都要经历：复制→粘贴→格式丢失→重新整理→再上传。<br>
+                    <span class="text-primary font-semibold">现在，一键解决所有问题。</span>
                 </p>
 
                 <div class="flex flex-col sm:flex-row gap-4 justify-center items-center">
-                    <a href="#solution" class="bg-feishu text-obsidian px-8 py-4 rounded-xl font-bold text-lg hover:bg-emerald-400 transition micro-interaction">
-                        <i class="fas fa-magic mr-2"></i>看看解决方案
+                    <a href="#solution" class="h-12 px-8 rounded-lg bg-primary text-primary-foreground font-medium flex items-center justify-center hover:bg-primary/90 transition shadow-lg shadow-primary/25 w-full sm:w-auto">
+                        <i class="fas fa-magic mr-2"></i> 看看解决方案
                     </a>
-                    <a href="https://l0c34idk7v.feishu.cn/wiki/YVxawi8X1i4aq3ksm9YcpNGBnSh" target="_blank" class="border-2 border-white/30 text-white px-8 py-4 rounded-xl font-semibold text-lg hover:bg-white/10 transition">
+                    <a href="https://l0c34idk7v.feishu.cn/wiki/YVxawi8X1i4aq3ksm9YcpNGBnSh" target="_blank" class="h-12 px-8 rounded-lg border border-border bg-card hover:bg-muted text-foreground font-medium flex items-center justify-center transition w-full sm:w-auto">
                         直接安装插件
                     </a>
                 </div>
-            </div>
-        </div>
 
-        <!-- 视觉暗示 -->
-        <div class="absolute bottom-8 left-1/2 transform -translate-x-1/2 text-white/60 animate-bounce">
-            <i class="fas fa-chevron-down text-xl"></i>
-        </div>
-    </section>
-
-    <!-- 痛点共鸣区 -->
-    <section id="pain" class="py-24 bg-gray-50">
-        <div class="container mx-auto px-6">
-            <div class="max-w-4xl mx-auto">
-                <div class="text-center mb-16">
-                    <h2 class="text-hierarchy-2 text-gray-900 mb-4">这些场景，你一定经历过</h2>
-                    <p class="text-hierarchy-4 text-gray-600">每一个痛点，都是我们重新设计的理由</p>
-                </div>
-
-                <div class="space-y-8">
-                    <!-- 痛点1：格式丢失 -->
-                    <div class="pain-point-card bg-white p-8 rounded-2xl shadow-sm fade-in">
-                        <div class="flex items-start space-x-6">
-                            <div class="flex-shrink-0">
-                                <div class="w-16 h-16 bg-red-100 rounded-2xl flex items-center justify-center">
-                                    <i class="fas fa-exclamation-triangle text-red-500 text-2xl"></i>
+                <!-- Hero Image / Visual -->
+                <div class="mt-20 relative rounded-xl border border-border bg-card/50 shadow-2xl overflow-hidden aspect-video group">
+                    <div class="absolute inset-0 bg-gradient-to-t from-background to-transparent z-10 opacity-60"></div>
+                    <!-- Abstract representation of the interface -->
+                    <div class="absolute inset-0 flex items-center justify-center">
+                        <div class="w-full h-full p-8 flex gap-8 opacity-80">
+                            <!-- Left: Obsidian (Dark Code) -->
+                            <div class="flex-1 rounded-lg bg-[#1e1e1e] p-4 font-mono text-xs text-gray-400 border border-gray-800 transform -rotate-1 group-hover:rotate-0 transition duration-500">
+                                <div class="flex gap-1.5 mb-4">
+                                    <div class="w-2.5 h-2.5 rounded-full bg-red-500"></div>
+                                    <div class="w-2.5 h-2.5 rounded-full bg-yellow-500"></div>
+                                    <div class="w-2.5 h-2.5 rounded-full bg-green-500"></div>
                                 </div>
-                            </div>
-                            <div class="flex-1">
-                                <h3 class="text-hierarchy-3 text-gray-900 mb-3">精心设计的格式，一复制就毁了</h3>
-                                <p class="text-hierarchy-4 text-gray-600 mb-4">
-                                    你花了2小时整理的思维导图、精美的表格、代码块的语法高亮...
-                                    复制到飞书后变成一堆乱码文本。
-                                </p>
-                                <div class="bg-red-50 p-4 rounded-lg border-l-4 border-red-200">
-                                    <p class="text-sm text-red-700 font-medium">
-                                        <i class="fas fa-quote-left mr-2"></i>
-                                        "又要重新排版，这已经是今天第5次了..."
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- 痛点2：文件处理 -->
-                    <div class="pain-point-card bg-white p-8 rounded-2xl shadow-sm fade-in">
-                        <div class="flex items-start space-x-6">
-                            <div class="flex-shrink-0">
-                                <div class="w-16 h-16 bg-orange-100 rounded-2xl flex items-center justify-center">
-                                    <i class="fas fa-file-image text-orange-500 text-2xl"></i>
-                                </div>
-                            </div>
-                            <div class="flex-1">
-                                <h3 class="text-hierarchy-3 text-gray-900 mb-3">图片和附件，一个个手动上传</h3>
-                                <p class="text-hierarchy-4 text-gray-600 mb-4">
-                                    笔记里有10张图片？那就要手动上传10次，然后一个个插入到正确位置。
-                                    PDF附件？还要单独处理。
-                                </p>
-                                <div class="bg-orange-50 p-4 rounded-lg border-l-4 border-orange-200">
-                                    <p class="text-sm text-orange-700 font-medium">
-                                        <i class="fas fa-clock mr-2"></i>
-                                        原本5分钟的分享，变成了30分钟的体力活
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- 痛点3：流程繁琐 -->
-                    <div class="pain-point-card bg-white p-8 rounded-2xl shadow-sm fade-in">
-                        <div class="flex items-start space-x-6">
-                            <div class="flex-shrink-0">
-                                <div class="w-16 h-16 bg-purple-100 rounded-2xl flex items-center justify-center">
-                                    <i class="fas fa-route text-purple-500 text-2xl"></i>
-                                </div>
-                            </div>
-                            <div class="flex-1">
-                                <h3 class="text-hierarchy-3 text-gray-900 mb-3">复杂的分享流程，打断思维</h3>
-                                <p class="text-hierarchy-4 text-gray-600 mb-4">
-                                    导出→上传→整理→发送，每次分享都要经历这4个步骤。
-                                    当你想快速分享一个想法时，这个流程就是创意杀手。
-                                </p>
-                                <div class="bg-purple-50 p-4 rounded-lg border-l-4 border-purple-200">
-                                    <p class="text-sm text-purple-700 font-medium">
-                                        <i class="fas fa-brain mr-2"></i>
-                                        思维被打断，灵感也就消失了
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- 解决方案展示 -->
-    <section id="solution" class="py-24 bg-white">
-        <div class="container mx-auto px-6">
-            <div class="max-w-6xl mx-auto">
-                <div class="text-center mb-16">
-                    <h2 class="text-hierarchy-2 text-gray-900 mb-4">一个插件，解决所有问题</h2>
-                    <p class="text-hierarchy-4 text-gray-600">不是功能的堆砌，而是体验的重新定义</p>
-                </div>
-
-                <!-- 核心解决方案 -->
-                <div class="grid lg:grid-cols-2 gap-12 items-center mb-20">
-                    <div class="space-y-8">
-                        <div class="solution-card bg-white p-6 rounded-2xl border border-gray-100 fade-in">
-                            <div class="flex items-start space-x-4">
-                                <div class="w-12 h-12 bg-feishu/10 rounded-xl flex items-center justify-center flex-shrink-0">
-                                    <i class="fas fa-magic text-feishu text-xl"></i>
-                                </div>
-                                <div>
-                                    <h3 class="text-hierarchy-3 text-gray-900 mb-2">格式完美保持</h3>
-                                    <p class="text-hierarchy-4 text-gray-600">
-                                        不是简单的复制粘贴，而是智能的格式转换。
-                                        表格、代码块、图片、链接...每一个元素都精确还原。
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="solution-card bg-white p-6 rounded-2xl border border-gray-100 fade-in">
-                            <div class="flex items-start space-x-4">
-                                <div class="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center flex-shrink-0">
-                                    <i class="fas fa-cloud-upload-alt text-blue-600 text-xl"></i>
-                                </div>
-                                <div>
-                                    <h3 class="text-hierarchy-3 text-gray-900 mb-2">智能文件处理</h3>
-                                    <p class="text-hierarchy-4 text-gray-600">
-                                        自动识别并上传所有本地文件。图片、PDF、Excel...
-                                        一键处理，无需手动操作。
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="solution-card bg-white p-6 rounded-2xl border border-gray-100 fade-in">
-                            <div class="flex items-start space-x-4">
-                                <div class="w-12 h-12 bg-purple-100 rounded-xl flex items-center justify-center flex-shrink-0">
-                                    <i class="fas fa-bolt text-purple-600 text-xl"></i>
-                                </div>
-                                <div>
-                                    <h3 class="text-hierarchy-3 text-gray-900 mb-2">一键直达</h3>
-                                    <p class="text-hierarchy-4 text-gray-600">
-                                        右键 → 分享到飞书 → 完成。
-                                        从4个步骤变成1个动作，从30分钟变成30秒。
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- 视觉对比 -->
-                    <div class="space-y-6">
-                        <div class="text-center mb-8">
-                            <h3 class="text-hierarchy-3 text-gray-900 mb-2">效果对比</h3>
-                            <p class="text-sm text-gray-500">看看转换前后的差别</p>
-                        </div>
-
-                        <!-- Before -->
-                        <div class="before-after obsidian-dark p-6 rounded-2xl">
-                            <div class="flex items-center mb-4">
-                                <div class="flex space-x-2">
-                                    <div class="w-3 h-3 bg-red-500 rounded-full"></div>
-                                    <div class="w-3 h-3 bg-yellow-500 rounded-full"></div>
-                                    <div class="w-3 h-3 bg-green-500 rounded-full"></div>
-                                </div>
-                                <span class="ml-4 text-sm text-gray-400">Obsidian - 项目计划.md</span>
-                            </div>
-                            <div class="font-mono text-sm space-y-2">
                                 <div class="text-green-400"># 产品设计方案</div>
-                                <div class="text-gray-300">## 核心功能</div>
-                                <div class="text-gray-300">- [x] 用户认证系统</div>
-                                <div class="text-gray-300">- [ ] 数据可视化</div>
-                                <div class="text-blue-400">![原型图](./prototype.png)</div>
-                                <div class="text-yellow-400">```javascript</div>
-                                <div class="text-yellow-400">const api = new API();</div>
-                                <div class="text-yellow-400">```</div>
+                                <div class="mt-2 text-gray-300">## 核心功能</div>
+                                <div class="mt-2 text-gray-300">- [x] 用户认证系统</div>
+                                <div class="mt-2 text-blue-400">![原型图](./prototype.png)</div>
+                                <div class="mt-4 border-l-2 border-gray-600 pl-2">
+                                    <span class="text-purple-400">const</span> api = new API();
+                                </div>
+                            </div>
+
+                            <!-- Arrow -->
+                            <div class="flex items-center justify-center text-muted-foreground">
+                                <i class="fas fa-chevron-right text-2xl"></i>
+                            </div>
+
+                            <!-- Right: Feishu (Clean Light) -->
+                            <div class="flex-1 rounded-lg bg-white p-4 font-sans text-xs text-gray-600 border border-gray-200 shadow-sm transform rotate-1 group-hover:rotate-0 transition duration-500">
+                                <div class="flex justify-between mb-4 border-b border-gray-100 pb-2">
+                                    <div class="font-bold text-gray-800">产品设计方案</div>
+                                    <div class="text-blue-500 text-[10px] bg-blue-50 px-2 py-0.5 rounded">Wiki</div>
+                                </div>
+                                <div class="font-bold text-lg text-gray-900 mb-2">核心功能</div>
+                                <div class="flex items-center gap-2 mb-2">
+                                    <i class="fas fa-check-square text-green-500"></i> 用户认证系统
+                                </div>
+                                <div class="bg-blue-50 p-2 rounded border border-blue-100 flex items-center gap-2 text-blue-600">
+                                    <i class="fas fa-image"></i> 原型图.png
+                                </div>
+                                <div class="mt-4 bg-gray-50 p-2 rounded border border-gray-200 font-mono text-gray-800">
+                                    <span class="text-purple-600">const</span> api = new API();
+                                </div>
                             </div>
                         </div>
+                    </div>
+                </div>
+            </div>
+        </section>
 
-                        <!-- Arrow -->
+        <!-- Pain Points Section -->
+        <section id="pain" class="py-24 border-t border-border/50 relative">
+            <div class="container mx-auto px-6">
+                <div class="text-center mb-16">
+                    <h2 class="text-3xl font-bold mb-4">这些场景，你一定经历过</h2>
+                    <p class="text-muted-foreground">每一个痛点，都是我们重新设计的理由</p>
+                </div>
+
+                <div class="grid md:grid-cols-3 gap-8">
+                    <!-- Card 1 -->
+                    <div class="p-8 rounded-2xl border border-border bg-card hover:bg-muted/50 transition duration-300 group">
+                        <div class="w-12 h-12 rounded-xl bg-red-500/10 flex items-center justify-center mb-6 group-hover:scale-110 transition duration-300">
+                            <i class="fas fa-bug text-red-500 text-xl"></i>
+                        </div>
+                        <h3 class="text-xl font-bold mb-3">格式崩坏</h3>
+                        <p class="text-muted-foreground text-sm leading-relaxed">
+                            精心调整的表格错位，代码块失去高亮，引用样式消失。复制粘贴的瞬间，心血付诸东流。
+                        </p>
+                    </div>
+
+                    <!-- Card 2 -->
+                    <div class="p-8 rounded-2xl border border-border bg-card hover:bg-muted/50 transition duration-300 group">
+                        <div class="w-12 h-12 rounded-xl bg-orange-500/10 flex items-center justify-center mb-6 group-hover:scale-110 transition duration-300">
+                            <i class="fas fa-image text-orange-500 text-xl"></i>
+                        </div>
+                        <h3 class="text-xl font-bold mb-3">图片地狱</h3>
+                        <p class="text-muted-foreground text-sm leading-relaxed">
+                            本地图片无法直接粘贴。你必须一张张手动上传，再重新调整位置。这是对效率的极大浪费。
+                        </p>
+                    </div>
+
+                    <!-- Card 3 -->
+                    <div class="p-8 rounded-2xl border border-border bg-card hover:bg-muted/50 transition duration-300 group">
+                        <div class="w-12 h-12 rounded-xl bg-purple-500/10 flex items-center justify-center mb-6 group-hover:scale-110 transition duration-300">
+                            <i class="fas fa-clock text-purple-500 text-xl"></i>
+                        </div>
+                        <h3 class="text-xl font-bold mb-3">流程断裂</h3>
+                        <p class="text-muted-foreground text-sm leading-relaxed">
+                            导出→上传→整理→发送，每次分享都要经历这4个步骤。当你想快速分享一个想法时，这个流程就是创意杀手。
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Solution Section -->
+        <section id="solution" class="py-24 border-t border-border/50 bg-muted/30">
+            <div class="container mx-auto px-6">
+                <div class="grid lg:grid-cols-2 gap-16 items-center">
+                    <div>
+                        <h2 class="text-3xl font-bold mb-6">一个插件，解决所有问题</h2>
+                        <p class="text-muted-foreground mb-8">
+                            不是功能的堆砌，而是体验的重新定义。
+                        </p>
+
+                        <div class="space-y-6">
+                            <div class="flex gap-4">
+                                <div class="mt-1 w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0">
+                                    <i class="fas fa-check text-primary text-xs"></i>
+                                </div>
+                                <div>
+                                    <h4 class="font-semibold text-foreground">格式完美保持</h4>
+                                    <p class="text-sm text-muted-foreground mt-1">不是简单的复制粘贴，而是智能的格式转换。表格、代码块、图片、链接...每一个元素都精确还原。</p>
+                                </div>
+                            </div>
+                            <div class="flex gap-4">
+                                <div class="mt-1 w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0">
+                                    <i class="fas fa-check text-primary text-xs"></i>
+                                </div>
+                                <div>
+                                    <h4 class="font-semibold text-foreground">智能文件处理</h4>
+                                    <p class="text-sm text-muted-foreground mt-1">自动识别并上传所有本地文件。图片、PDF、Excel... 一键处理，无需手动操作。</p>
+                                </div>
+                            </div>
+                            <div class="flex gap-4">
+                                <div class="mt-1 w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0">
+                                    <i class="fas fa-check text-primary text-xs"></i>
+                                </div>
+                                <div>
+                                    <h4 class="font-semibold text-foreground">一键直达</h4>
+                                    <p class="text-sm text-muted-foreground mt-1">右键 → 分享到飞书 → 完成。从4个步骤变成1个动作，从30分钟变成30秒。</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Tech Spec Cards (Migrated from 1.html) -->
+                    <div class="grid gap-4">
+                        <div class="p-6 bg-card border border-border rounded-xl shadow-sm">
+                            <div class="flex items-center gap-4 mb-4">
+                                <div class="w-10 h-10 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-500">
+                                    <i class="fas fa-cogs"></i>
+                                </div>
+                                <h4 class="font-semibold">直连架构</h4>
+                            </div>
+                            <p class="text-sm text-muted-foreground">直接调用飞书官方 API，不经过任何第三方服务器。你的数据从 Obsidian 直达飞书，中间零停留。</p>
+                        </div>
+                        <div class="p-6 bg-card border border-border rounded-xl shadow-sm">
+                            <div class="flex items-center gap-4 mb-4">
+                                <div class="w-10 h-10 rounded-lg bg-green-500/10 flex items-center justify-center text-green-500">
+                                    <i class="fas fa-brain"></i>
+                                </div>
+                                <h4 class="font-semibold">智能占位符</h4>
+                            </div>
+                            <p class="text-sm text-muted-foreground">不是简单的查找替换，而是 AST 级别的内容解析。支持嵌套文档、相对路径、复杂引用。</p>
+                        </div>
+                         <div class="p-6 bg-card border border-border rounded-xl shadow-sm">
+                            <div class="flex items-center gap-4 mb-4">
+                                <div class="w-10 h-10 rounded-lg bg-purple-500/10 flex items-center justify-center text-purple-500">
+                                    <i class="fas fa-bolt"></i>
+                                </div>
+                                <h4 class="font-semibold">异步并发</h4>
+                            </div>
+                            <p class="text-sm text-muted-foreground">文件上传采用并发策略，大文件分块上传，进度实时反馈，用户体验丝滑。</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Tech Deep Dive Section (Added from 1.html) -->
+        <section id="tech" class="py-24 bg-card border-t border-border/50">
+            <div class="container mx-auto px-6">
+                <div class="max-w-4xl mx-auto text-center mb-16">
+                    <h2 class="text-3xl font-bold mb-4">技术实现：不只是能用，更要优雅</h2>
+                    <p class="text-muted-foreground">给关心技术细节的你</p>
+                </div>
+
+                <div class="grid md:grid-cols-2 gap-8">
+                     <div class="bg-muted/30 p-8 rounded-2xl border border-border">
+                        <div class="font-mono text-xs text-muted-foreground mb-4">src/core/uploader.ts</div>
+                        <pre class="font-mono text-sm overflow-x-auto text-foreground">
+<span class="text-purple-400">async</span> <span class="text-blue-400">function</span> <span class="text-yellow-400">uploadWithProgress</span>(file) {
+  <span class="text-muted-foreground">// 并发上传优化</span>
+  <span class="text-purple-400">await</span> Promise.allSettled(
+    files.map(f => limit(() => upload(f)))
+  );
+}</pre>
+                     </div>
+                     <div class="bg-muted/30 p-8 rounded-2xl border border-border">
+                        <div class="font-mono text-xs text-muted-foreground mb-4">src/parser/markdown.ts</div>
+                        <pre class="font-mono text-sm overflow-x-auto text-foreground">
+<span class="text-muted-foreground">// 智能解析 Markdown 引用</span>
+<span class="text-purple-400">const</span> placeholder = generatePlaceholder(
+  filePath,
+  fileType,
+  context
+);</pre>
+                     </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Install Section (Redesigned) -->
+        <section id="install" class="py-24 border-t border-border/50 bg-muted/20">
+            <div class="container mx-auto px-6 text-center">
+                <h2 class="text-3xl font-bold mb-6">2分钟，开始新的分享体验</h2>
+                <p class="text-muted-foreground mb-12">选择最适合你的安装方式</p>
+
+                <div class="max-w-4xl mx-auto bg-card border border-border p-8 rounded-3xl shadow-sm relative overflow-hidden">
+                    <div class="absolute top-0 right-0 bg-primary text-primary-foreground text-xs font-bold px-3 py-1 rounded-bl-xl">推荐</div>
+
+                    <h3 class="text-xl font-bold mb-8 flex items-center justify-center gap-2">
+                        <i class="fas fa-store text-primary"></i> Obsidian 社区插件市场
+                    </h3>
+
+                    <div class="grid md:grid-cols-3 gap-8 mb-10">
                         <div class="text-center">
-                            <div class="inline-flex items-center justify-center w-12 h-12 bg-feishu rounded-full">
-                                <i class="fas fa-arrow-down text-white text-xl"></i>
-                            </div>
+                            <div class="w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mx-auto mb-4 text-primary font-bold text-xl border border-primary/20">1</div>
+                            <p class="text-sm font-medium">打开 Obsidian 设置</p>
                         </div>
-
-                        <!-- After -->
-                        <div class="feishu-clean p-6 rounded-2xl">
-                            <div class="space-y-4">
-                                <h3 class="text-2xl font-bold text-gray-900">产品设计方案</h3>
-                                <h4 class="text-lg font-semibold text-gray-800">核心功能</h4>
-                                <div class="space-y-2">
-                                    <div class="flex items-center">
-                                        <i class="fas fa-check-square text-green-500 mr-2"></i>
-                                        <span>用户认证系统</span>
-                                    </div>
-                                    <div class="flex items-center">
-                                        <i class="far fa-square text-gray-400 mr-2"></i>
-                                        <span>数据可视化</span>
-                                    </div>
-                                </div>
-                                <div class="bg-blue-50 p-3 rounded-lg border border-blue-200">
-                                    <div class="flex items-center">
-                                        <i class="fas fa-image text-blue-600 mr-2"></i>
-                                        <span class="text-blue-800 font-medium">原型图.png</span>
-                                    </div>
-                                </div>
-                                <div class="bg-gray-900 text-green-400 p-3 rounded-lg font-mono text-sm">
-                                    const api = new API();
-                                </div>
-                            </div>
+                         <div class="text-center">
+                            <div class="w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mx-auto mb-4 text-primary font-bold text-xl border border-primary/20">2</div>
+                            <p class="text-sm font-medium">搜索 "飞书分享"</p>
+                        </div>
+                         <div class="text-center">
+                            <div class="w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mx-auto mb-4 text-primary font-bold text-xl border border-primary/20">3</div>
+                            <p class="text-sm font-medium">安装并启用</p>
                         </div>
                     </div>
-                </div>
-            </div>
-        </div>
-    </section>
 
-    <!-- 产品亮点深挖 -->
-    <section class="py-24 bg-gray-50">
-        <div class="container mx-auto px-6">
-            <div class="max-w-6xl mx-auto">
-                <div class="text-center mb-16">
-                    <h2 class="text-hierarchy-2 text-gray-900 mb-4">为什么我们敢说"重新定义"？</h2>
-                    <p class="text-hierarchy-4 text-gray-600">因为我们解决的不只是功能问题，而是体验问题</p>
+                    <a href="https://l0c34idk7v.feishu.cn/wiki/YVxawi8X1i4aq3ksm9YcpNGBnSh" target="_blank" class="inline-flex items-center justify-center h-12 px-8 rounded-full bg-primary text-primary-foreground font-bold hover:bg-primary/90 transition shadow-lg shadow-primary/25">
+                        <i class="fas fa-download mr-2"></i> 立即安装插件
+                    </a>
                 </div>
 
-                <div class="grid lg:grid-cols-3 gap-8">
-                    <!-- 亮点1：技术架构 -->
-                    <div class="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 fade-in">
-                        <div class="w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl flex items-center justify-center mb-6">
-                            <i class="fas fa-cogs text-white text-2xl"></i>
-                        </div>
-                        <h3 class="text-hierarchy-3 text-gray-900 mb-4">直连架构，无中间商</h3>
-                        <p class="text-hierarchy-4 text-gray-600 mb-4">
-                            直接调用飞书官方API，不经过任何第三方服务器。
-                            你的数据从Obsidian直达飞书，中间零停留。
-                        </p>
-                        <div class="bg-blue-50 p-4 rounded-lg">
-                            <p class="text-sm text-blue-700 font-medium">
-                                <i class="fas fa-shield-alt mr-2"></i>
-                                数据安全 + 传输速度，双重保障
-                            </p>
-                        </div>
-                    </div>
-
-                    <!-- 亮点2：智能处理 -->
-                    <div class="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 fade-in">
-                        <div class="w-16 h-16 bg-gradient-to-br from-green-500 to-emerald-600 rounded-2xl flex items-center justify-center mb-6">
-                            <i class="fas fa-brain text-white text-2xl"></i>
-                        </div>
-                        <h3 class="text-hierarchy-3 text-gray-900 mb-4">智能占位符系统</h3>
-                        <p class="text-hierarchy-4 text-gray-600 mb-4">
-                            不是简单的查找替换，而是智能的内容解析。
-                            支持嵌套文档、相对路径、复杂引用...
-                        </p>
-                        <div class="bg-green-50 p-4 rounded-lg">
-                            <p class="text-sm text-green-700 font-medium">
-                                <i class="fas fa-magic mr-2"></i>
-                                连子文档都能递归处理，真正的一键搞定
-                            </p>
-                        </div>
-                    </div>
-
-                    <!-- 亮点3：用户体验 -->
-                    <div class="bg-white p-8 rounded-2xl shadow-sm border border-gray-100 fade-in">
-                        <div class="w-16 h-16 bg-gradient-to-br from-purple-500 to-pink-600 rounded-2xl flex items-center justify-center mb-6">
-                            <i class="fas fa-heart text-white text-2xl"></i>
-                        </div>
-                        <h3 class="text-hierarchy-3 text-gray-900 mb-4">情感化设计</h3>
-                        <p class="text-hierarchy-4 text-gray-600 mb-4">
-                            每一个交互都经过精心设计。
-                            进度提示、错误处理、成功反馈...让技术有温度。
-                        </p>
-                        <div class="bg-purple-50 p-4 rounded-lg">
-                            <p class="text-sm text-purple-700 font-medium">
-                                <i class="fas fa-smile mr-2"></i>
-                                不只是能用，而是好用、爱用
-                            </p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- 安装：重新设计 -->
-    <section id="install" class="py-24 bg-white">
-        <div class="container mx-auto px-6">
-            <div class="max-w-4xl mx-auto text-center">
-                <div class="mb-16">
-                    <h2 class="text-hierarchy-2 text-gray-900 mb-4">2分钟，开始新的分享体验</h2>
-                    <p class="text-hierarchy-4 text-gray-600">选择最适合你的安装方式</p>
-                </div>
-
-                <!-- 推荐安装方式 -->
-                <div class="bg-gradient-to-br from-feishu/5 to-blue-50 p-8 rounded-3xl border-2 border-feishu/20 mb-8 relative overflow-hidden">
-                    <div class="absolute top-4 right-4">
-                        <span class="bg-feishu text-white px-3 py-1 rounded-full text-sm font-medium">推荐</span>
-                    </div>
-
-                    <div class="max-w-2xl mx-auto">
-                        <h3 class="text-hierarchy-3 text-gray-900 mb-6">
-                            <i class="fas fa-store text-feishu mr-3"></i>
-                            Obsidian 社区插件市场
-                        </h3>
-
-                        <div class="grid md:grid-cols-3 gap-6 mb-8">
-                            <div class="text-center">
-                                <div class="w-12 h-12 bg-feishu/10 rounded-xl flex items-center justify-center mx-auto mb-3">
-                                    <span class="text-feishu font-bold">1</span>
-                                </div>
-                                <p class="text-sm text-gray-600">打开 Obsidian 设置</p>
-                            </div>
-                            <div class="text-center">
-                                <div class="w-12 h-12 bg-feishu/10 rounded-xl flex items-center justify-center mx-auto mb-3">
-                                    <span class="text-feishu font-bold">2</span>
-                                </div>
-                                <p class="text-sm text-gray-600">搜索"飞书分享"</p>
-                            </div>
-                            <div class="text-center">
-                                <div class="w-12 h-12 bg-feishu/10 rounded-xl flex items-center justify-center mx-auto mb-3">
-                                    <span class="text-feishu font-bold">3</span>
-                                </div>
-                                <p class="text-sm text-gray-600">安装并启用</p>
-                            </div>
-                        </div>
-
-                        <a href="https://l0c34idk7v.feishu.cn/wiki/YVxawi8X1i4aq3ksm9YcpNGBnSh" target="_blank" class="inline-block bg-feishu text-white px-8 py-4 rounded-xl font-semibold text-lg hover:bg-emerald-600 transition micro-interaction">
-                            <i class="fas fa-download mr-2"></i>
-                            立即安装插件
-                        </a>
-                    </div>
-                </div>
-
-                <!-- 备选方案 -->
-                <div class="text-center">
-                    <p class="text-sm text-gray-500 mb-4">或者</p>
-                    <a href="https://l0c34idk7v.feishu.cn/wiki/YVxawi8X1i4aq3ksm9YcpNGBnSh" target="_blank"
-                       class="inline-flex items-center text-gray-600 hover:text-gray-900 transition">
-                        <i class="fas fa-book mr-2"></i>
-                        <span class="border-b border-gray-300 hover:border-gray-600">查看详细安装教程</span>
+                <div class="mt-8">
+                    <a href="https://l0c34idk7v.feishu.cn/wiki/YVxawi8X1i4aq3ksm9YcpNGBnSh" target="_blank" class="text-sm text-muted-foreground hover:text-foreground transition underline decoration-dotted">
+                        查看详细安装教程
                     </a>
                 </div>
             </div>
-        </div>
-    </section>
+        </section>
 
-    <!-- 技术深度：给开发者看的 -->
-    <section class="py-24 bg-gray-900 text-white">
-        <div class="container mx-auto px-6">
-            <div class="max-w-6xl mx-auto">
-                <div class="text-center mb-16">
-                    <h2 class="text-hierarchy-2 mb-4">技术实现：不只是能用，更要优雅</h2>
-                    <p class="text-hierarchy-4 text-gray-400">给关心技术细节的你</p>
-                </div>
-
-                <div class="grid lg:grid-cols-2 gap-12 items-center">
-                    <div class="space-y-8">
-                        <div class="border-l-4 border-feishu pl-6">
-                            <h3 class="text-hierarchy-3 mb-3">OAuth 2.0 + 直连架构</h3>
-                            <p class="text-gray-300 mb-4">
-                                不走代理，不存数据。你的笔记从 Obsidian 直达飞书，
-                                中间零停留，零风险。
-                            </p>
-                            <div class="bg-gray-800 p-4 rounded-lg font-mono text-sm text-green-400">
-                                // 直接调用飞书 API<br>
-                                const response = await fetch(<br>
-                                &nbsp;&nbsp;'https://open.feishu.cn/open-apis/...'<br>
-                                );
-                            </div>
-                        </div>
-
-                        <div class="border-l-4 border-blue-500 pl-6">
-                            <h3 class="text-hierarchy-3 mb-3">智能占位符系统</h3>
-                            <p class="text-gray-300 mb-4">
-                                不是简单的字符串替换，而是 AST 级别的内容解析。
-                                支持嵌套引用、相对路径、复杂格式。
-                            </p>
-                            <div class="bg-gray-800 p-4 rounded-lg font-mono text-sm text-blue-400">
-                                // 智能解析 Markdown 引用<br>
-                                const placeholder = generatePlaceholder(<br>
-                                &nbsp;&nbsp;filePath, fileType, context<br>
-                                );
-                            </div>
-                        </div>
-
-                        <div class="border-l-4 border-purple-500 pl-6">
-                            <h3 class="text-hierarchy-3 mb-3">异步并发处理</h3>
-                            <p class="text-gray-300 mb-4">
-                                文件上传采用并发策略，大文件分块上传，
-                                进度实时反馈，用户体验丝滑。
-                            </p>
-                            <div class="bg-gray-800 p-4 rounded-lg font-mono text-sm text-purple-400">
-                                // 并发上传优化<br>
-                                await Promise.allSettled(<br>
-                                &nbsp;&nbsp;files.map(uploadWithProgress)<br>
-                                );
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="space-y-6">
-                        <div class="bg-gray-800 p-6 rounded-2xl">
-                            <h4 class="text-lg font-semibold mb-4 text-feishu">
-                                <i class="fas fa-code mr-2"></i>
-                                开源透明
-                            </h4>
-                            <p class="text-gray-300 text-sm mb-4">
-                                所有代码开源在 GitHub，欢迎审查、贡献、Fork。
-                                我们相信透明是最好的安全保障。
-                            </p>
-                            <a href="https://github.com/LazyZane/feishushare"
-                               class="inline-flex items-center text-feishu hover:text-emerald-400 transition">
-                                <i class="fab fa-github mr-2"></i>
-                                查看源码
-                            </a>
-                        </div>
-
-                        <div class="bg-gray-800 p-6 rounded-2xl">
-                            <h4 class="text-lg font-semibold mb-4 text-blue-400">
-                                <i class="fas fa-rocket mr-2"></i>
-                                持续优化
-                            </h4>
-                            <p class="text-gray-300 text-sm mb-4">
-                                基于用户反馈持续迭代，每个版本都有性能提升。
-                                从 v1.0 到现在，上传速度提升了 300%。
-                            </p>
-                            <div class="text-xs text-gray-400">
-                                最新版本：v2.1.0 | 更新时间：2024年
-                            </div>
-                        </div>
-
-                        <div class="bg-gray-800 p-6 rounded-2xl">
-                            <h4 class="text-lg font-semibold mb-4 text-purple-400">
-                                <i class="fas fa-users mr-2"></i>
-                                社区驱动
-                            </h4>
-                            <p class="text-gray-300 text-sm mb-4">
-                                功能需求来自真实用户，Bug 修复响应迅速。
-                                这不只是一个插件，更是一个社区。
-                            </p>
-                            <div class="flex space-x-4 text-xs text-gray-400">
-                                <span>Issues: 已解决 95%</span>
-                                <span>响应时间: < 24h</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- 最后的行动号召 -->
-    <section class="py-24 bg-gradient-to-br from-obsidian via-gray-800 to-feishu/20">
-        <div class="container mx-auto px-6 text-center">
-            <div class="max-w-4xl mx-auto">
-                <h2 class="text-hierarchy-2 text-white mb-6">
-                    停止在分享上浪费时间
-                </h2>
-                <p class="text-hierarchy-4 text-gray-300 mb-8 max-w-2xl mx-auto">
-                    每一次复制粘贴的痛苦，每一次格式丢失的抓狂，每一次手动上传的无奈...
-                    <br><span class="text-feishu font-semibold">现在，一键解决</span>
+        <!-- CTA Section -->
+        <section class="py-24 relative overflow-hidden">
+            <div class="absolute inset-0 bg-primary/5 dark:bg-primary/10"></div>
+            <div class="container mx-auto px-6 relative z-10 text-center">
+                <h2 class="text-4xl font-bold mb-6">停止在分享上浪费时间</h2>
+                <p class="text-xl text-muted-foreground mb-10 max-w-2xl mx-auto">
+                    每一次复制粘贴的痛苦，每一次格式丢失的抓狂... <br>
+                    <span class="text-primary font-bold">现在，一键解决。</span>
                 </p>
-
-                <div class="flex flex-col sm:flex-row gap-4 justify-center items-center mb-12">
-                    <a href="https://l0c34idk7v.feishu.cn/wiki/YVxawi8X1i4aq3ksm9YcpNGBnSh" target="_blank" class="bg-feishu text-obsidian px-10 py-5 rounded-2xl font-bold text-xl hover:bg-emerald-400 transition micro-interaction">
-                        <i class="fas fa-download mr-3"></i>
-                        立即安装，开始新体验
+                <div class="flex flex-col sm:flex-row gap-4 justify-center items-center">
+                    <a href="https://l0c34idk7v.feishu.cn/wiki/YVxawi8X1i4aq3ksm9YcpNGBnSh" class="inline-flex items-center justify-center h-14 px-8 rounded-full bg-foreground text-background font-bold hover:opacity-90 transition transform hover:scale-105">
+                        <i class="fas fa-download mr-3"></i> 立即安装，开始新体验
                     </a>
-                    <a href="https://github.com/LazyZane/feishushare" target="_blank"
-                       class="text-gray-300 hover:text-white transition flex items-center">
-                        <i class="fab fa-github mr-2"></i>
-                        或查看源码
+                    <a href="https://github.com/LazyZane/feishushare" target="_blank" class="inline-flex items-center justify-center h-14 px-8 rounded-full border border-border bg-card hover:bg-muted text-foreground font-medium transition">
+                        <i class="fab fa-github mr-2"></i> 或查看源码
                     </a>
-                </div>
-
-                <!-- 支持作者 -->
-                <div class="border-t border-gray-700 pt-12">
-                    <p class="text-gray-400 mb-8 text-lg">如果这个插件让你的工作更轻松，欢迎支持作者 ☕</p>
-                    <div class="inline-block bg-white/10 backdrop-blur-sm p-8 rounded-3xl border border-white/20">
-                        <p class="text-gray-300 font-medium">微信扫码赞赏</p>
-                        <p class="text-sm text-gray-400 mt-2">感谢你的支持 🙏</p>
-                    </div>
                 </div>
             </div>
-        </div>
-    </section>
+        </section>
 
-    <!-- 极简页脚 -->
-    <footer class="bg-obsidian text-gray-400 py-8">
-        <div class="container mx-auto px-6">
-            <div class="flex flex-col md:flex-row justify-between items-center">
-                <div class="flex items-center space-x-4 mb-4 md:mb-0">
-                    <div class="w-8 h-8 bg-feishu rounded-lg flex items-center justify-center">
-                        <i class="fas fa-share-alt text-obsidian text-sm"></i>
+        <!-- Support Section -->
+        <section class="py-12 border-t border-border/50 bg-muted/20">
+            <div class="container mx-auto px-6 text-center">
+                <h3 class="text-lg font-bold mb-6">如果这个插件让你的工作更轻松</h3>
+                <div class="inline-block p-6 bg-card rounded-2xl shadow-xl border border-border transform hover:-translate-y-1 transition duration-300">
+                    <!-- Replace with your QR Code Image -->
+                    <div class="w-48 h-48 bg-muted flex items-center justify-center rounded-lg mb-4 text-muted-foreground mx-auto relative overflow-hidden group">
+                        <img src="https://pub-e7ab2475c6ba4b828f7609007b9d09ba.r2.dev/2026/01/个人介绍-IP对外/0ff1a4ddac862facf9c10962087fe0da.png" alt="微信赞赏码" class="w-full h-full object-cover">
                     </div>
-                    <span class="font-semibold">飞书分享</span>
-                    <span class="text-xs bg-gray-700 px-2 py-1 rounded">v2.1.0</span>
+                    <p class="text-sm font-medium text-foreground">微信扫码赞赏</p>
+                    <p class="text-xs text-muted-foreground mt-1">感谢你的支持 🙏</p>
                 </div>
+            </div>
+        </section>
+    </main>
 
-                <div class="flex items-center space-x-6 text-sm">
-                    <a href="https://github.com/LazyZane/feishushare"
-                       class="hover:text-feishu transition flex items-center">
-                        <i class="fab fa-github mr-1"></i>
-                        GitHub
-                    </a>
-                    <span>MIT License</span>
-                    <span>Made by LazyZane</span>
+    <!-- Footer -->
+    <footer class="border-t border-border py-12 bg-background">
+        <div class="container mx-auto px-6 flex flex-col md:flex-row justify-between items-center gap-6">
+            <div class="flex items-center space-x-2">
+                <div class="w-6 h-6 rounded bg-primary flex items-center justify-center text-white text-xs">
+                    <i class="fas fa-share-alt"></i>
                 </div>
+                <span class="text-lg font-bold">飞书分享</span>
+                <span class="text-xs bg-muted px-2 py-0.5 rounded border border-border text-muted-foreground">v2.1.0</span>
+            </div>
+            <div class="flex items-center gap-6 text-sm text-muted-foreground">
+                <a href="https://github.com/LazyZane/feishushare" class="hover:text-foreground transition flex items-center gap-2">
+                    <i class="fab fa-github"></i> GitHub
+                </a>
+                <span>MIT License</span>
+                <span>Made by LazyZane</span>
             </div>
         </div>
     </footer>
 
-    <!-- 精简而有效的交互 -->
     <script>
-        // 平滑滚动
+        // Theme Toggle Logic
+        const themeToggleBtn = document.getElementById('theme-toggle');
+        const html = document.documentElement;
+
+        // Initial Theme Check
+        if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+            html.classList.add('dark');
+        } else {
+            html.classList.remove('dark');
+        }
+
+        themeToggleBtn.addEventListener('click', () => {
+            html.classList.toggle('dark');
+            if (html.classList.contains('dark')) {
+                localStorage.theme = 'dark';
+            } else {
+                localStorage.theme = 'light';
+            }
+        });
+
+        // Smooth Scroll
         document.querySelectorAll('a[href^="#"]').forEach(anchor => {
             anchor.addEventListener('click', function (e) {
                 e.preventDefault();
@@ -708,47 +539,6 @@
                     });
                 }
             });
-        });
-
-        // 滚动触发动画
-        const observerOptions = {
-            threshold: 0.1,
-            rootMargin: '0px 0px -50px 0px'
-        };
-
-        const observer = new IntersectionObserver((entries) => {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                    entry.target.classList.add('visible');
-                }
-            });
-        }, observerOptions);
-
-        // 页面加载完成后初始化
-        document.addEventListener('DOMContentLoaded', () => {
-            // 观察所有需要动画的元素
-            document.querySelectorAll('.fade-in').forEach(el => {
-                observer.observe(el);
-            });
-
-            // 为微交互元素添加延迟，创造层次感
-            document.querySelectorAll('.micro-interaction').forEach((el, index) => {
-                el.style.transitionDelay = `${index * 0.1}s`;
-            });
-        });
-
-        // 简单的性能优化：防抖滚动
-        let ticking = false;
-        function updateOnScroll() {
-            // 这里可以添加滚动相关的优化逻辑
-            ticking = false;
-        }
-
-        window.addEventListener('scroll', () => {
-            if (!ticking) {
-                requestAnimationFrame(updateOnScroll);
-                ticking = true;
-            }
         });
     </script>
 </body>
