@@ -6,6 +6,8 @@
 
 一个功能强大的 Obsidian 插件，让您轻松将 Markdown 文档无缝分享到飞书云文档。支持完整的格式转换、文件上传、子文档嵌入和跨文档图片处理。
 
+详细配置文档及FAQ:https://my.feishu.cn/wiki/YVxawi8X1i4aq3ksm9YcpNGBnSh
+
 ## ✨ 核心特性
 
 ### 🚀 分享体验
